@@ -3180,10 +3180,10 @@ function Set-LimitDockResponsiveSizes {
     }
   } catch {}
 
-  $script:DockHorizontalHeight = [int][Math]::Max(68, [Math]::Min(84, [Math]::Round($screenH * 0.075)))
+  $script:DockHorizontalHeight = [int][Math]::Max(88, [Math]::Min(96, [Math]::Round($screenH * 0.085)))
   $script:DockSideWidth = [int][Math]::Max(320, [Math]::Min(350, [Math]::Round($screenW * 0.17)))
-  $script:DockCardChipWidth = [int][Math]::Max(380, [Math]::Min(420, [Math]::Round($screenW * 0.22)))
-  $script:DockCardChipHeight = [int][Math]::Max(60, [Math]::Min(70, ([int]$script:DockHorizontalHeight - 14)))
+  $script:DockCardChipWidth = [int][Math]::Max(440, [Math]::Min(500, [Math]::Round($screenW * 0.24)))
+  $script:DockCardChipHeight = [int][Math]::Max(76, [Math]::Min(82, ([int]$script:DockHorizontalHeight - 14)))
 }
 
 Ensure-OpenUsage
