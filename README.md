@@ -58,7 +58,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Version 0.1.0
 ```
 
-`build-release.ps1` prepares `dist\LimitDock-<version>`. It builds the Go read-model probe and creates `LimitDock.exe` when `Invoke-ps2exe` is installed. If `Invoke-ps2exe` is missing, install or import `ps2exe` before expecting an EXE. Distribute the whole release folder as a zip, not `LimitDock.exe` by itself, because the EXE expects the probe, icons, docs, and runtime folders beside it.
+`build-release.ps1` prepares `dist\LimitDock-<version>` and `dist\LimitDock-<version>.zip`. It builds the Go read-model probe and creates `LimitDock.exe` when `Invoke-ps2exe` is installed. If `Invoke-ps2exe` is missing, install or import `ps2exe` before expecting an EXE. Distribute the generated zip, not `LimitDock.exe` by itself, because the EXE expects the probe, icons, and runtime folders beside it.
 
 See:
 

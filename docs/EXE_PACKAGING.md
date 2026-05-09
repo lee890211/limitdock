@@ -26,7 +26,7 @@ LimitDock-<version>/
 
 Do not ship `settings.json`, databases, WAL files, PID files, logs, Go caches, OpenUsage.sh source, or personal runtime downloads. LimitDock fetches the official OpenUsage.sh Windows release when the runtime binary is missing.
 
-Publish the complete `LimitDock-<version>` folder as a zip. Do not publish `LimitDock.exe` alone: the EXE expects `engine/bin/openusage-readmodel.exe`, `assets/icons`, launch scripts, and runtime directories beside it. The full Markdown docs stay in the repository and are not copied into the default release folder.
+Publish `dist/LimitDock-<version>.zip`. Do not publish `LimitDock.exe` alone: the EXE expects `engine/bin/openusage-readmodel.exe`, `assets/icons`, launch scripts, and runtime directories beside it. The full Markdown docs stay in the repository and are not copied into the default release folder.
 
 ## Build And Test
 
@@ -36,7 +36,7 @@ Run checks first:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 ```
 
-Prepare a release folder:
+Prepare a release folder and archive:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Version 0.1.0
@@ -50,7 +50,7 @@ Typical ps2exe install:
 Install-Module ps2exe -Scope CurrentUser
 ```
 
-The script does not bundle OpenUsage.sh by default. Use `-IncludeOpenUsageBinary` only for an explicit offline release after verifying the cached binary is the official upstream build.
+The script removes local `settings.json` before creating `dist/LimitDock-<version>.zip`. If you run the EXE from the release folder, a fresh local `settings.json` can appear there; rebuild before publishing the zip. The script does not bundle OpenUsage.sh by default. Use `-IncludeOpenUsageBinary` only for an explicit offline release after verifying the cached binary is the official upstream build.
 
 ## EXE Smoke Test
 

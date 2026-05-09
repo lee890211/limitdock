@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $DistRoot = Join-Path $RepoRoot "dist"
 $ReleaseDir = Join-Path $DistRoot "LimitDock-$Version"
+$ReleaseZip = Join-Path $DistRoot "LimitDock-$Version.zip"
 $ProbeDir = Join-Path $RepoRoot "probes\openusage-readmodel"
 $ProbeOut = Join-Path $ReleaseDir "engine\bin\openusage-readmodel.exe"
 
@@ -29,6 +30,9 @@ function ConvertTo-Ps2ExeVersion {
 
 if (Test-Path -LiteralPath $ReleaseDir) {
   Remove-Item -LiteralPath $ReleaseDir -Recurse -Force
+}
+if (Test-Path -LiteralPath $ReleaseZip) {
+  Remove-Item -LiteralPath $ReleaseZip -Force
 }
 
 New-Item -ItemType Directory -Force -Path `
@@ -87,4 +91,7 @@ if ($IncludeOpenUsageBinary -and (-not $SkipOpenUsageDownload)) {
   Write-Host "OpenUsage.sh binary not bundled; first run will download the official Windows release."
 }
 
+Remove-Item -LiteralPath (Join-Path $ReleaseDir "settings.json") -Force -ErrorAction SilentlyContinue
+Compress-Archive -Path (Join-Path $ReleaseDir "*") -DestinationPath $ReleaseZip -Force
 Write-Host "Release prepared: $ReleaseDir"
+Write-Host "Release archive: $ReleaseZip"
