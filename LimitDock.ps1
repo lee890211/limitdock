@@ -4,7 +4,30 @@
 )
 
 $ErrorActionPreference = "Continue"
-$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:LimitDockEntryPath = ""
+try { $script:LimitDockEntryPath = [string]$MyInvocation.MyCommand.Path } catch {}
+
+function Resolve-LimitDockAppRoot {
+  param([AllowNull()][string]$EntryPath)
+  if (-not [string]::IsNullOrWhiteSpace($EntryPath)) {
+    try { return (Split-Path -Parent $EntryPath) } catch {}
+  }
+  try {
+    $mainModulePath = [string][System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    if (-not [string]::IsNullOrWhiteSpace($mainModulePath)) {
+      return (Split-Path -Parent $mainModulePath)
+    }
+  } catch {}
+  try {
+    $baseDir = [string][System.AppDomain]::CurrentDomain.BaseDirectory
+    if (-not [string]::IsNullOrWhiteSpace($baseDir)) {
+      return $baseDir.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    }
+  } catch {}
+  return (Get-Location).Path
+}
+
+$ScriptRoot = Resolve-LimitDockAppRoot $script:LimitDockEntryPath
 $EngineDir = Join-Path $ScriptRoot "engine"
 $BinDir = Join-Path $EngineDir "bin"
 $StateDir = Join-Path $EngineDir "state"
