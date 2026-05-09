@@ -1,0 +1,13 @@
+{
+  "autoHide": false,
+  "antigravity": {
+    "enabled": true,
+    "binaryPath": "",
+    "dataDir": "",
+    "subtitle": ""
+  },
+  "gaugeMaxBands": 4,
+  "gaugeWarnPercent": 72,
+  "gaugeCritPercent": 90,
+  "refreshSeconds": 30
+}

@@ -1,0 +1,24 @@
+# Runtime state and logs
+engine/state/
+
+# Downloaded or locally built engine artifacts
+engine/bin/
+engine/downloads/
+engine/.gocache/
+engine/.gomodcache/
+
+# Release artifacts
+dist/
+release/
+
+# Accidental upstream OpenUsage.sh source checkout
+engine/openusage/
+
+# Per-user settings
+settings.json
+
+# Windows and editor noise
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
