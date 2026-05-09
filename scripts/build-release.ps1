@@ -14,6 +14,9 @@ $ProbeOut = Join-Path $ReleaseDir "engine\bin\openusage-readmodel.exe"
 
 function ConvertTo-Ps2ExeVersion {
   param([string]$RawVersion)
+  if ($RawVersion -match "^v?(?<yyyy>\d{4})(?<mm>\d{2})(?<dd>\d{2})$") {
+    return "$($Matches['yyyy']).$([int]$Matches['mm']).$([int]$Matches['dd']).0"
+  }
   if ($RawVersion -match "^\d+\.\d+\.\d+\.\d+$") {
     return $RawVersion
   }
@@ -38,11 +41,13 @@ if (Test-Path -LiteralPath $ReleaseZip) {
 New-Item -ItemType Directory -Force -Path `
   $ReleaseDir, `
   (Join-Path $ReleaseDir "assets"), `
+  (Join-Path $ReleaseDir "docs\images"), `
   (Join-Path $ReleaseDir "engine\bin"), `
   (Join-Path $ReleaseDir "engine\downloads"), `
   (Join-Path $ReleaseDir "engine\state") | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $RepoRoot "assets\icons") -Destination (Join-Path $ReleaseDir "assets\icons") -Recurse -Force
+Copy-Item -Path (Join-Path $RepoRoot "docs\images\*") -Destination (Join-Path $ReleaseDir "docs\images") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "README.md") -Destination $ReleaseDir -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "NOTES.md") -Destination $ReleaseDir -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "settings.example.json") -Destination $ReleaseDir -Force

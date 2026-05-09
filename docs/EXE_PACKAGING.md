@@ -19,6 +19,7 @@ LimitDock-<version>/
   NOTES.md
   settings.example.json
   assets/icons/*.png
+  docs/images/*.png
   engine/bin/openusage-readmodel.exe
   engine/downloads/
   engine/state/
@@ -26,7 +27,7 @@ LimitDock-<version>/
 
 Do not ship `settings.json`, databases, WAL files, PID files, logs, Go caches, OpenUsage.sh source, or personal runtime downloads. LimitDock fetches the official OpenUsage.sh Windows release when the runtime binary is missing.
 
-Publish `dist/LimitDock-<version>.zip`. Do not publish `LimitDock.exe` alone: the EXE expects `engine/bin/openusage-readmodel.exe`, `assets/icons`, launch scripts, and runtime directories beside it. The full Markdown docs stay in the repository and are not copied into the default release folder.
+Publish `dist/LimitDock-<version>.zip`. Do not publish `LimitDock.exe` alone: the EXE expects `engine/bin/openusage-readmodel.exe`, `assets/icons`, launch scripts, README screenshots, and runtime directories beside it. The full Markdown docs stay in the repository and are not copied into the default release folder.
 
 ## Build And Test
 
@@ -39,7 +40,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
 Prepare a release folder and archive:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Version 0.1.0
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Version vYYYYMMDD
 ```
 
 If `Invoke-ps2exe` is not available, the release folder is still created with `LimitDock.ps1`. Install or import `ps2exe` before expecting `LimitDock.exe`.
@@ -55,8 +56,8 @@ The script removes local `settings.json` before creating `dist/LimitDock-<versio
 ## EXE Smoke Test
 
 1. Run `scripts\check.ps1`.
-2. Run `scripts\build-release.ps1 -Version 0.1.0`.
-3. Start `dist\LimitDock-0.1.0\LimitDock.exe` when present, or `run-limitdock.ps1` from the release folder when ps2exe is unavailable.
+2. Run `scripts\build-release.ps1 -Version vYYYYMMDD`.
+3. Start `dist\LimitDock-vYYYYMMDD\LimitDock.exe` when present, or `run-limitdock.ps1` from the release folder when ps2exe is unavailable.
 4. Open the tray menu and verify `Hide Status Bar`, `Settings`, and `Exit`.
 5. Switch overlay/reserved and each dock edge. In reserved mode, maximize a normal window and verify it does not cover the reserved bar.
 6. Double-click quota cards and verify hidden rows can be restored.
