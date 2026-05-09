@@ -387,15 +387,9 @@ function Format-UsageResetPhrase {
         return ("rolls {0:d} (~{1:0.#}d)" -f $ResetUtc.ToLocalTime(), ($d.TotalDays))
       }
       if ($d.TotalHours -ge 1) {
-        [int]$hrs = [int][Math]::Floor([double]$d.TotalHours)
-        [int]$totMin = [int][Math]::Floor([double]$d.TotalMinutes)
-        [int]$remMin = ($totMin - ([int]$hrs * 60))
-        if ($remMin -lt 0) {
-          $remMin = [Math]::Abs($remMin) % 60
-        }
-        return ("rolls in ~{0}h {1}m (at {2})" -f $hrs, $remMin, $clock)
+        return ("rolls in ~{0:0.#}h (at {1})" -f $d.TotalHours, $clock)
       }
-      return ("rolls in ~{0}m (at {1})" -f [Math]::Max(1, [Math]::Ceiling($d.TotalMinutes)), $clock)
+      return ("rolls in ~{0:0.#}m (at {1})" -f [Math]::Max(1.0, [double]$d.TotalMinutes), $clock)
     }
     if (($d.TotalMinutes -gt 0) -and ($d.TotalMinutes -le 2)) {
       return ("rolls very soon (~{0}s, at {1})" -f [Math]::Max(1, [Math]::Ceiling($d.TotalSeconds)), $clock)
@@ -776,15 +770,10 @@ function Format-UsageResetShort {
       return "~now"
     }
     if ($d.TotalHours -lt 1) {
-      return ("~{0}m" -f [Math]::Max(1, [Math]::Ceiling($d.TotalMinutes)))
+      return ("~{0:0.#}m" -f [Math]::Max(1.0, [double]$d.TotalMinutes))
     }
     if ($d.TotalHours -lt 48) {
-      [int]$hrs = [int][Math]::Floor([double]$d.TotalHours)
-      [int]$mins = [int]([Math]::Floor([double]$d.TotalMinutes) - ($hrs * 60))
-      if ($mins -le 0) {
-        return ("~{0}h" -f $hrs)
-      }
-      return ("~{0}h{1}m" -f $hrs, $mins)
+      return ("~{0:0.#}h" -f $d.TotalHours)
     }
     return ("~{0:0.#}d" -f $d.TotalDays)
   } catch {
@@ -2625,7 +2614,7 @@ function New-ProviderCardControl {
 
   [int]$ribbonBandCount = @( $ribbonBands ).Count
   [int]$ribbonCols = 1
-  if ((-not $sideDock) -and ($ribbonBandCount -gt 1)) {
+  if ((-not $sideDock) -and ($ribbonBandCount -gt 2)) {
     $ribbonCols = 2
   }
   [int]$ribbonRows = 0
