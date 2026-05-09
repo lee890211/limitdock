@@ -90,14 +90,6 @@ The build creates:
 
 If `Invoke-ps2exe` is unavailable, the release folder is still created with the PowerShell entrypoint, but no EXE.
 
-## Provider Notes
-
-Antigravity quota appears only when openusage exposes it as a provider or quota-like snapshot. LimitDock does not add a custom Antigravity parser. You can still set local Antigravity hints in Settings:
-
-- `antigravity.binaryPath`
-- `antigravity.dataDir`
-- `antigravity.subtitle`
-
 ## Documentation
 
 - [User Manual](docs/USER_MANUAL.md)
