@@ -90,7 +90,6 @@ function Load-LimitDockSettings {
     autoHide = $false
     dockMode = "overlay"
     dockEdge = "bottom"
-    statusBarVisible = $true
     hiddenQuotaBands = [pscustomobject]@{}
     refreshSeconds = 30
     antigravity = [pscustomobject]@{
@@ -151,11 +150,8 @@ function Load-LimitDockSettings {
       $de = $defaults.dockEdge
     }
     $settings.dockEdge = $de
-    if (-not ($settings.PSObject.Properties.Name -contains "statusBarVisible")) {
-      $settings | Add-Member -NotePropertyName statusBarVisible -NotePropertyValue $defaults.statusBarVisible -Force
-    }
-    if ($null -eq $settings.statusBarVisible) {
-      $settings.statusBarVisible = $defaults.statusBarVisible
+    if ($settings.PSObject.Properties.Name -contains "statusBarVisible") {
+      $settings.statusBarVisible = $true
     }
     if (-not ($settings.PSObject.Properties.Name -contains "hiddenQuotaBands")) {
       $settings | Add-Member -NotePropertyName hiddenQuotaBands -NotePropertyValue ([pscustomobject]@{}) -Force
@@ -842,7 +838,7 @@ function Get-ResetShortText {
   elseif ($mn -eq "quota_pro") {
     [void]$names.Add("quota_pro_reset")
   }
-  elseif ($mn -in @("plan_percent_used", "plan_api_percent_used", "plan_auto_percent_used")) {
+  elseif ($mn -eq "plan_percent_used") {
     [void]$names.Add("billing_cycle_end")
   }
 
@@ -926,12 +922,6 @@ function Format-QuotaBandCaption {
   }
   elseif ($k -eq "plan_percent_used") {
     $model = "plan"
-  }
-  elseif ($k -eq "plan_api_percent_used") {
-    $model = "api"
-  }
-  elseif ($k -eq "plan_auto_percent_used") {
-    $model = "auto"
   }
 
   $model = ([string]$model).Trim(" _-")
@@ -1102,7 +1092,7 @@ function Test-QuotaFamilyMetricKey {
   if (($k -eq "usage_five_hour") -or ($k.StartsWith("usage_seven_day"))) {
     return $true
   }
-  if ($k -in @("plan_percent_used", "plan_api_percent_used", "plan_auto_percent_used")) {
+  if ($k -eq "plan_percent_used") {
     return $true
   }
   return $k.EndsWith("_quota")
@@ -1126,7 +1116,7 @@ function Test-DisplayQuotaMetricKey {
     }
   }
 
-  if ($k -in @("plan_percent_used", "plan_api_percent_used", "plan_auto_percent_used")) {
+  if ($k -eq "plan_percent_used") {
     return ($providerKey -eq "cursor")
   }
 
@@ -1374,8 +1364,6 @@ function Collect-BandsFromMetrics {
     "quota_pro",
     "quota_flash",
     "plan_percent_used",
-    "plan_api_percent_used",
-    "plan_auto_percent_used",
     "rate_limit_secondary",
     "rate_limit_code_review_primary",
     "rate_limit_code_review_secondary",
@@ -1906,8 +1894,6 @@ function Convert-SnapshotToCard {
       "quota_pro",
       "quota_flash",
       "plan_percent_used",
-      "plan_api_percent_used",
-      "plan_auto_percent_used",
       "rate_limit_secondary",
       "rate_limit_code_review_primary",
       "rate_limit_code_review_secondary",
@@ -2902,6 +2888,7 @@ function New-DockDragHandleButton {
   $wrap.Width = 28
   $wrap.Height = 28
   $wrap.Margin = New-Object System.Windows.Forms.Padding(1, 1, 1, 1)
+  $wrap.Cursor = [System.Windows.Forms.Cursors]::SizeAll
   Set-CardLabelStyle $wrap "status"
 
   $dots = New-Object System.Windows.Forms.PictureBox
@@ -2918,8 +2905,38 @@ function New-DockDragHandleButton {
     try {
       if ($args.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
         $script:DockDragActive = $true
+        $pt = [System.Windows.Forms.Cursor]::Position
+        $script:DockDragOffset = New-Object System.Drawing.Point ([int]($pt.X - $form.Left)), ([int]($pt.Y - $form.Top))
+        try { ([System.Windows.Forms.Control]$sender).Capture = $true } catch {}
+        try { $wrap.Capture = $true } catch {}
+        try { $dots.Capture = $true } catch {}
+        if ((Normalize-DockMode $script:DockMode) -eq "reserved") {
+          Unregister-LimitDockAppBar
+        }
+        $form.TopMost = $true
       }
     } catch {}
+  }
+  $onMove = {
+    param($sender, $args)
+    try {
+      if (-not [bool]$script:DockDragActive) {
+        return
+      }
+      $pt = [System.Windows.Forms.Cursor]::Position
+      $off = $script:DockDragOffset
+      if ($null -eq $off) {
+        $off = New-Object System.Drawing.Point 0, 0
+      }
+      [int]$left = [int]($pt.X - [int]$off.X)
+      [int]$top = [int]($pt.Y - [int]$off.Y)
+      $form.SetBounds($left, $top, $form.Width, $form.Height)
+      try {
+        [void][LimitDockNative]::SetWindowPos($form.Handle, [intptr](-1), $left, $top, $form.Width, $form.Height, 0x0040)
+      } catch {}
+    } catch {
+      Write-Log "Dock drag move failed: $($_.Exception.Message)"
+    }
   }
   $onUp = {
     param($sender, $args)
@@ -2928,6 +2945,10 @@ function New-DockDragHandleButton {
         return
       }
       $script:DockDragActive = $false
+      $script:DockDragOffset = $null
+      try { ([System.Windows.Forms.Control]$sender).Capture = $false } catch {}
+      try { $wrap.Capture = $false } catch {}
+      try { $dots.Capture = $false } catch {}
       $edge = Get-NearestDockEdgeFromPoint ([System.Windows.Forms.Cursor]::Position)
       if ($edge) {
         Set-DockEdgeAndApply $edge
@@ -2937,8 +2958,10 @@ function New-DockDragHandleButton {
     }
   }
   $wrap.Add_MouseDown($onDown)
+  $wrap.Add_MouseMove($onMove)
   $wrap.Add_MouseUp($onUp)
   $dots.Add_MouseDown($onDown)
+  $dots.Add_MouseMove($onMove)
   $dots.Add_MouseUp($onUp)
 
   $wrap.Controls.Add($dots) | Out-Null
@@ -3162,7 +3185,7 @@ $script:Settings = Load-LimitDockSettings
 [int]$script:DockRefreshSeconds = [Math]::Max(5, [int]$script:Settings.refreshSeconds)
 [string]$script:DockMode = Normalize-DockMode $script:Settings.dockMode
 [string]$script:DockEdge = Normalize-DockEdge $script:Settings.dockEdge
-[bool]$script:StatusBarVisible = [bool]$script:Settings.statusBarVisible
+[bool]$script:StatusBarVisible = $true
 [bool]$script:AppBarRegistered = $false
 [uint32]$script:AppBarCallbackMessage = 0x8001
 $script:ReservedBaseWorkBottom = $null
@@ -3361,6 +3384,14 @@ function Get-NearestDockEdgeFromPoint {
 function Set-DockEdgeAndApply {
   param([AllowNull()][object]$Edge)
   [string]$newEdge = Normalize-DockEdge $Edge
+  if ((Normalize-DockMode $script:DockMode) -eq "reserved") {
+    Unregister-LimitDockAppBar
+    try {
+      [System.Windows.Forms.Application]::DoEvents()
+      Start-Sleep -Milliseconds 120
+      [System.Windows.Forms.Application]::DoEvents()
+    } catch {}
+  }
   $script:DockEdge = $newEdge
   if ($script:Settings) {
     $script:Settings.dockEdge = $newEdge
@@ -3696,14 +3727,6 @@ function Set-AutoHide {
 function Set-StatusBarVisible {
   param([bool]$Visible)
   $script:StatusBarVisible = [bool]$Visible
-  if ($script:Settings) {
-    if (-not ($script:Settings.PSObject.Properties.Name -contains "statusBarVisible")) {
-      $script:Settings | Add-Member -NotePropertyName statusBarVisible -NotePropertyValue $script:StatusBarVisible -Force
-    } else {
-      $script:Settings.statusBarVisible = $script:StatusBarVisible
-    }
-    Save-LimitDockSettings $script:Settings
-  }
   Update-StatusBarVisibilityMenu
 
   if (-not [bool]$script:StatusBarVisible) {
@@ -4583,10 +4606,8 @@ $hoverTimer.Start()
 
 $form.Add_Shown({
   try {
-    if (-not [bool]$script:StatusBarVisible) {
-      Set-StatusBarVisible $false
-      return
-    }
+    $script:StatusBarVisible = $true
+    Update-StatusBarVisibilityMenu
     Apply-DockMode $script:DockMode
     Set-AutoHide ([bool]$script:AutoHideEnabled)
     Render-Cards

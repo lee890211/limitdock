@@ -2,7 +2,6 @@
   "autoHide": false,
   "dockMode": "overlay",
   "dockEdge": "bottom",
-  "statusBarVisible": true,
   "hiddenQuotaBands": {},
   "antigravity": {
     "enabled": true,

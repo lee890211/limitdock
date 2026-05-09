@@ -24,7 +24,7 @@ Quota normalization is intentionally narrow:
 - `quota*`
 - `usage_five_hour`
 - `usage_seven_day*`
-- Cursor plan rows: `plan_percent_used`, `plan_api_percent_used`, `plan_auto_percent_used`
+- Cursor plan row: `plan_percent_used`
 
 Throughput, spend, request, token, and cost metrics are filtered before rendering.
 
@@ -56,7 +56,6 @@ Antigravity:
 
 - `dockMode`
 - `dockEdge`
-- `statusBarVisible`
 - `autoHide`
 - `hiddenQuotaBands`
 - refresh interval and gauge thresholds
@@ -72,4 +71,4 @@ The appbar rectangle is scaled for DPI before `SHAppBarMessage`, while the form 
 
 ## Rendering Loop
 
-The UI timer renders cards only when `statusBarVisible` is true. Tray hide stops the timers and hides the form; tray show restarts timers, reapplies saved docking settings, and renders immediately.
+The UI timer renders cards only while the session-visible flag is true. Tray hide stops the timers and hides the form; tray show restarts timers, reapplies saved docking settings, and renders immediately. Hide is not persisted because a fresh launch implies the user wants to see the bar.

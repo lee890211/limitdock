@@ -28,7 +28,7 @@ The pin/unpin icon appears only in overlay mode because reserved mode is always 
 
 Overlay mode floats above windows. It can be pinned or set to slide away at the selected edge.
 
-Reserved mode registers a Windows appbar and applies a matching work area. Maximized windows should leave the reserved edge free. Hide from the tray always unregisters the reserved area and restores the previous work area.
+Reserved mode registers a Windows appbar and applies a matching work area. Maximized windows should leave the reserved edge free. Hide from the tray always unregisters the reserved area and restores the previous work area. Hide is session-only and does not survive app restart.
 
 ## Provider Row Selection
 

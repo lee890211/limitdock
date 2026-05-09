@@ -22,7 +22,7 @@ Double-click a provider card to choose which rows are visible.
 
 Right-click the tray icon:
 
-- `Hide Status Bar`: hides the bar, unregisters reserved mode, restores the Windows work area, disables hover reveal, and pauses refresh.
+- `Hide Status Bar`: hides the bar, unregisters reserved mode, restores the Windows work area, disables hover reveal, and pauses refresh. This is not saved across launches.
 - `Show Status Bar`: restores the saved mode, edge, and pin state, then refreshes immediately.
 - `Settings`: opens configuration.
 - `Exit`: closes LimitDock and stops the managed OpenUsage daemon.
@@ -55,11 +55,9 @@ Checked rows are visible. Unchecked rows are hidden. Hidden rows are never delet
 
 ## Cursor
 
-Cursor rows are shown when OpenUsage exposes these billing-cycle metrics:
+Cursor shows the plan-cycle quota row when OpenUsage exposes this billing-cycle metric:
 
 - `plan_percent_used`
-- `plan_api_percent_used`
-- `plan_auto_percent_used`
 
 LimitDock displays the remaining percent and uses `billing_cycle_end` for reset text when present. Cursor spend, request, token, tool-call, and cost metrics are not shown.
 
