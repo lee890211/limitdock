@@ -1550,7 +1550,7 @@ function New-UsageGaugePanel {
   if (-not $critPct) { $critPct = 90 }
   $panel = New-Object System.Windows.Forms.Panel
   $mh = [Math]::Max(12, [Math]::Min(22, [int]$GaugeHeightPx))
-  $mw = [Math]::Max(40, [int]$GaugeWidthPx)
+  $mw = [Math]::Max(28, [int]$GaugeWidthPx)
   $panel.Width = $mw
   $panel.Height = $mh
   $panel.Margin = New-Object System.Windows.Forms.Padding(4, 0, 4, 0)
@@ -2662,21 +2662,58 @@ function New-ProviderCardControl {
       }
       $segment = $ribbonBands[$bandIndex]
       [int]$cellLeft = $rbCol * ($cellW + $cellGap)
+      [string]$capText = [string]$segment.Caption
+      [string]$winShort = ""
+      try { $winShort = Format-QuotaWindowLabel $segment.Window } catch { $winShort = "" }
+      [string]$resetShort = ""
+      try { $resetShort = ([string]$segment.Reset).Trim() } catch { $resetShort = "" }
+      $metaParts = @()
+      if (-not [string]::IsNullOrWhiteSpace($winShort)) { $metaParts += $winShort }
+      if (-not [string]::IsNullOrWhiteSpace($resetShort)) { $metaParts += $resetShort }
+      [string]$metaText = ($metaParts -join " ")
+      foreach ($tail in @($metaText, $resetShort, $winShort)) {
+        if (-not [string]::IsNullOrWhiteSpace($tail)) {
+          $capText = ([regex]::Replace($capText, "\s+" + [regex]::Escape($tail) + "$", "")).Trim()
+        }
+      }
+      [bool]$hasMeta = -not [string]::IsNullOrWhiteSpace($metaText)
+
       [int]$capW = [Math]::Max(56, [Math]::Min(96, ($cellW - 86)))
       [int]$pctW = 38
       [int]$metaW = 0
+      [bool]$showGauge = $true
       if ($sideDock) {
         $pctW = 42
-        $metaW = 72
-        $capW = [Math]::Max(68, [Math]::Min(106, ($cellW - $metaW - $pctW - 52)))
+        if ($hasMeta) {
+          $metaW = 70
+          $capW = [Math]::Max(64, [Math]::Min(106, ($cellW - $metaW - $pctW - 54)))
+        } else {
+          $capW = [Math]::Max(94, [Math]::Min(140, ($cellW - $pctW - 48)))
+        }
+      }
+      elseif ($hasMeta) {
+        $pctW = 36
+        if ($cellW -lt 220) {
+          $showGauge = $false
+          $metaW = [Math]::Max(58, [Math]::Min(76, [int][Math]::Floor($cellW * 0.42)))
+          $capW = [Math]::Max(46, [Math]::Min(88, ($cellW - $metaW - $pctW - 6)))
+        } else {
+          $metaW = [Math]::Max(64, [Math]::Min(82, [int][Math]::Floor($cellW * 0.25)))
+          $capW = [Math]::Max(70, [Math]::Min(140, ($cellW - $metaW - $pctW - 48)))
+        }
       }
       [int]$metaLeft = $cellLeft + $capW + 2
       [int]$pctLeft = $metaLeft + $metaW + 2
-      if (-not $sideDock) {
+      if (-not $hasMeta) {
         $pctLeft = $cellLeft + $capW + 2
       }
       [int]$gaugeLeft = $pctLeft + $pctW + 6
-      [int]$gaugeW = [Math]::Max(40, ($cellLeft + $cellW - $gaugeLeft - 2))
+      [int]$gaugeMinW = 28
+      if ($sideDock) { $gaugeMinW = 40 }
+      [int]$gaugeW = 0
+      if ($showGauge) {
+        $gaugeW = [Math]::Max($gaugeMinW, ($cellLeft + $cellW - $gaugeLeft - 2))
+      }
 
       $cap = New-Object System.Windows.Forms.Label
       $cap.AutoSize = $false
@@ -2689,23 +2726,6 @@ function New-ProviderCardControl {
       $cap.ForeColor = $script:Theme.MutedFore
       $cap.BackColor = $container.BackColor
       $cap.AutoEllipsis = $true
-      [string]$capText = [string]$segment.Caption
-      [string]$metaText = ""
-      if ($sideDock) {
-        [string]$winShort = ""
-        try { $winShort = Format-QuotaWindowLabel $segment.Window } catch { $winShort = "" }
-        [string]$resetShort = ""
-        try { $resetShort = ([string]$segment.Reset).Trim() } catch { $resetShort = "" }
-        $metaParts = @()
-        if (-not [string]::IsNullOrWhiteSpace($winShort)) { $metaParts += $winShort }
-        if (-not [string]::IsNullOrWhiteSpace($resetShort)) { $metaParts += $resetShort }
-        $metaText = ($metaParts -join " ")
-        foreach ($tail in @($metaText, $resetShort, $winShort)) {
-          if (-not [string]::IsNullOrWhiteSpace($tail)) {
-            $capText = ([regex]::Replace($capText, "\s+" + [regex]::Escape($tail) + "$", "")).Trim()
-          }
-        }
-      }
       $cap.Text = Convert-ToDisplayText $capText
       $cap.Tag = $Card
       $cap.Add_Click($clickHandler)
@@ -2713,7 +2733,7 @@ function New-ProviderCardControl {
 
       [void]$row.Controls.Add($cap)
 
-      if ($sideDock) {
+      if ($hasMeta) {
         $meta = New-Object System.Windows.Forms.Label
         $meta.AutoSize = $false
         $meta.Left = $metaLeft
@@ -2754,23 +2774,25 @@ function New-ProviderCardControl {
         $pctLbl.Add_DoubleClick($doubleClickHandler)
         [void]$row.Controls.Add($pctLbl)
 
-        $gauge = New-UsageGaugePanel $gaugeW 13 $pctVal $Card
-        $gauge.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
-        $gauge.Left = $gaugeLeft
-        $gauge.Top = 2
-        $gauge.Width = $gaugeW
-        $gauge.BackColor = $container.BackColor
-        $gauge.Add_Click($clickHandler)
-        $gauge.Add_DoubleClick($doubleClickHandler)
-        try {
-          [void]$row.Controls.Add($gauge)
-        } catch {
-          Write-Log "Gauge add failed on $($Card.Name): $($_.Exception.Message)"
+        if ($showGauge) {
+          $gauge = New-UsageGaugePanel $gaugeW 13 $pctVal $Card
+          $gauge.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left
+          $gauge.Left = $gaugeLeft
+          $gauge.Top = 2
+          $gauge.Width = $gaugeW
+          $gauge.BackColor = $container.BackColor
+          $gauge.Add_Click($clickHandler)
+          $gauge.Add_DoubleClick($doubleClickHandler)
+          try {
+            [void]$row.Controls.Add($gauge)
+          } catch {
+            Write-Log "Gauge add failed on $($Card.Name): $($_.Exception.Message)"
+          }
+          $gauge.BringToFront() | Out-Null
+          try {
+            $gauge.Refresh()
+          } catch {}
         }
-        $gauge.BringToFront() | Out-Null
-        try {
-          $gauge.Refresh()
-        } catch {}
       }
       elseif ($segment.DisplayDetail) {
         $info = New-Object System.Windows.Forms.Label
