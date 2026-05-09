@@ -3216,8 +3216,19 @@ $form.Top = $script:ShowTop
 Write-Log "Showing statusbar left=$($form.Left) top=$($form.Top) width=$($form.Width) height=$($form.Height)"
 
 function Update-LimitDockScreenMetrics {
-  $script:Screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
-  $script:Bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+  $targetScreen = [System.Windows.Forms.Screen]::PrimaryScreen
+  try {
+    if ($form -and $form.IsHandleCreated -and $form.Visible) {
+      $targetScreen = [System.Windows.Forms.Screen]::FromControl($form)
+    }
+    elseif ($form) {
+      [int]$probeX = [int]($script:ShowLeft + [Math]::Max(1, [int]($form.Width / 2)))
+      [int]$probeY = [int]($script:ShowTop + [Math]::Max(1, [int]($form.Height / 2)))
+      $targetScreen = [System.Windows.Forms.Screen]::FromPoint((New-Object System.Drawing.Point $probeX, $probeY))
+    }
+  } catch {}
+  $script:Screen = $targetScreen.WorkingArea
+  $script:Bounds = $targetScreen.Bounds
   $reserve = $script:Bounds.Bottom - $script:Screen.Bottom
   if ($reserve -le 0) {
     $reserve = 48
@@ -3335,6 +3346,10 @@ function Set-DockFormLayoutForEdge {
 
 function Move-LimitDockToDockState {
   param([bool]$Shown)
+  if ((-not $Shown) -and ((Normalize-DockMode $script:DockMode) -eq "overlay") -and (Test-DockEdgeIsSide $script:DockEdge)) {
+    try { $form.Hide() } catch { $form.Visible = $false }
+    return
+  }
   [int]$left = $script:ShowLeft
   [int]$top = $script:ShowTop
   if (-not $Shown) {
@@ -3394,14 +3409,14 @@ function Set-OverlayDockBounds {
     $script:HideTop = $script:Bounds.Top - $form.Height - 2
   } elseif ($edge -eq "left") {
     $script:ShowLeft = $script:Screen.Left + 2
-    $script:HideLeft = $script:Bounds.Left - $form.Width - 2
+    $script:HideLeft = $script:ShowLeft
     $script:ShowTop = $script:Screen.Top
-    $script:HideTop = $script:Screen.Top
+    $script:HideTop = $script:ShowTop
   } elseif ($edge -eq "right") {
     $script:ShowLeft = $script:Screen.Right - $form.Width - 2
-    $script:HideLeft = $script:Bounds.Right + 2
+    $script:HideLeft = $script:ShowLeft
     $script:ShowTop = $script:Screen.Top
-    $script:HideTop = $script:Screen.Top
+    $script:HideTop = $script:ShowTop
   } else {
     $script:ShowTop = $script:Screen.Bottom - $form.Height - 2
     $script:HideTop = $script:Bounds.Bottom + 2
@@ -4494,7 +4509,7 @@ $hoverTimer.Add_Tick({
     [bool]$side = Test-DockEdgeIsSide $edge
     [bool]$shown = $false
     if ($side) {
-      $shown = ([Math]::Abs([int]$form.Left - [int]$script:ShowLeft) -le 2)
+      $shown = ([bool]$form.Visible) -and ([Math]::Abs([int]$form.Left - [int]$script:ShowLeft) -le 2)
     } else {
       $shown = ([Math]::Abs([int]$form.Top - [int]$script:ShowTop) -le 2)
     }
