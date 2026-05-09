@@ -58,9 +58,12 @@ Antigravity:
 - `dockEdge`
 - `autoHide`
 - `hiddenQuotaBands`
+- `startWithWindows`
 - refresh interval and gauge thresholds
 
 `settings.example.json` documents portable defaults.
+
+The Windows startup option is implemented as a per-user `.lnk` in the user's Startup folder. The shortcut prefers `launch-limitdock.vbs`, then `LimitDock.exe`, then script mode. This keeps startup behavior local to the extracted folder and avoids machine-wide registry writes.
 
 ## Appbar And DPI
 

@@ -2,6 +2,7 @@
   "autoHide": false,
   "dockMode": "reserved",
   "dockEdge": "bottom",
+  "startWithWindows": false,
   "hiddenQuotaBands": {},
   "antigravity": {
     "enabled": true,

@@ -75,6 +75,8 @@ Dock edges:
 
 Dock mode, dock edge, auto-hide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time.
 
+`Start LimitDock when Windows starts` creates a shortcut in the current user's Windows Startup folder. It points to `launch-limitdock.vbs` when that launcher exists, so release builds start quietly from the extracted folder after sign-in. Clear the checkbox to remove the shortcut.
+
 ## Provider Behavior
 
 Codex:

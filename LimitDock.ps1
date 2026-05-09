@@ -90,6 +90,7 @@ function Load-LimitDockSettings {
     autoHide = $false
     dockMode = "reserved"
     dockEdge = "bottom"
+    startWithWindows = $false
     hiddenQuotaBands = [pscustomobject]@{}
     refreshSeconds = 30
     antigravity = [pscustomobject]@{
@@ -150,6 +151,12 @@ function Load-LimitDockSettings {
       $de = $defaults.dockEdge
     }
     $settings.dockEdge = $de
+    if (-not ($settings.PSObject.Properties.Name -contains "startWithWindows")) {
+      $settings | Add-Member -NotePropertyName startWithWindows -NotePropertyValue $defaults.startWithWindows -Force
+    }
+    if ($null -eq $settings.startWithWindows) {
+      $settings.startWithWindows = $defaults.startWithWindows
+    }
     if ($settings.PSObject.Properties.Name -contains "statusBarVisible") {
       $settings.statusBarVisible = $true
     }
@@ -189,6 +196,96 @@ function Save-LimitDockSettings {
   } catch {
     Write-Log "Failed to save settings: $($_.Exception.Message)"
   }
+}
+
+function Get-LimitDockStartupShortcutPath {
+  $startupDir = [Environment]::GetFolderPath("Startup")
+  if ([string]::IsNullOrWhiteSpace($startupDir)) {
+    $startupDir = Join-Path ([Environment]::GetFolderPath("ApplicationData")) "Microsoft\Windows\Start Menu\Programs\Startup"
+  }
+  return (Join-Path $startupDir "LimitDock.lnk")
+}
+
+function Get-LimitDockStartupLaunchPath {
+  $vbs = Join-Path $ScriptRoot "launch-limitdock.vbs"
+  if (Test-Path -LiteralPath $vbs) {
+    return $vbs
+  }
+  $exe = Join-Path $ScriptRoot "LimitDock.exe"
+  if (Test-Path -LiteralPath $exe) {
+    return $exe
+  }
+  return (Join-Path $ScriptRoot "LimitDock.ps1")
+}
+
+function Normalize-LimitDockPathForCompare {
+  param([AllowNull()][string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return ""
+  }
+  try {
+    return ([System.IO.Path]::GetFullPath($Path)).TrimEnd('\').ToLowerInvariant()
+  } catch {
+    return ([string]$Path).Trim().TrimEnd('\').ToLowerInvariant()
+  }
+}
+
+function Test-LimitDockStartupEnabled {
+  $shortcutPath = Get-LimitDockStartupShortcutPath
+  if (-not (Test-Path -LiteralPath $shortcutPath)) {
+    return $false
+  }
+  try {
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $actual = Normalize-LimitDockPathForCompare $shortcut.TargetPath
+    $expected = Normalize-LimitDockPathForCompare (Get-LimitDockStartupLaunchPath)
+    if ([string]::IsNullOrWhiteSpace($expected)) {
+      return $false
+    }
+    return ($actual -eq $expected)
+  } catch {
+    Write-Log "Startup shortcut inspection failed: $($_.Exception.Message)"
+    return $true
+  }
+}
+
+function Set-LimitDockStartup {
+  param([bool]$Enabled)
+
+  $shortcutPath = Get-LimitDockStartupShortcutPath
+  if (-not $Enabled) {
+    if (Test-Path -LiteralPath $shortcutPath) {
+      Remove-Item -LiteralPath $shortcutPath -Force
+    }
+    return
+  }
+
+  $startupDir = Split-Path -Parent $shortcutPath
+  if (-not (Test-Path -LiteralPath $startupDir)) {
+    New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
+  }
+
+  $targetPath = Get-LimitDockStartupLaunchPath
+  $shell = New-Object -ComObject WScript.Shell
+  $shortcut = $shell.CreateShortcut($shortcutPath)
+  $shortcut.TargetPath = $targetPath
+  $shortcut.WorkingDirectory = $ScriptRoot
+  $shortcut.Description = "Start LimitDock"
+  $shortcut.WindowStyle = 7
+
+  $exeIcon = Join-Path $ScriptRoot "LimitDock.exe"
+  if (Test-Path -LiteralPath $exeIcon) {
+    $shortcut.IconLocation = "$exeIcon,0"
+  }
+
+  if ([System.IO.Path]::GetExtension($targetPath).ToLowerInvariant() -eq ".ps1") {
+    $shortcut.TargetPath = "powershell.exe"
+    $shortcut.Arguments = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$targetPath`""
+  } else {
+    $shortcut.Arguments = ""
+  }
+  $shortcut.Save()
 }
 
 function ConvertTo-LdHashtable {
@@ -3988,6 +4085,9 @@ function Show-SettingsDialog {
     $y0 += 34
     Add-LabelBlock $scLd ([ref]$y0) "Overlay floats above other windows. Reserved sets a Windows reserved work area so maximized windows leave room for the ribbon." 44
 
+    $startupCheck = Add-ChkTab $scLd ([ref]$y0) "Start LimitDock when Windows starts" (Test-LimitDockStartupEnabled) "limitdock_startupCheck"
+    Add-LabelBlock $scLd ([ref]$y0) "Creates a per-user Startup shortcut. It launches this folder through launch-limitdock.vbs when available, so no administrator rights are needed." 52
+
     $slideCheck = Add-ChkTab $scLd ([ref]$y0) "Bar slides away at edge (unpinned peek)" ([bool]$script:AutoHideEnabled) "limitdock_slideCheck"
     Add-LabelBlock $scLd ([ref]$y0) "Pinned keeps the ribbon visible above your taskbar. Unpinned docks it just off-screen and reveals it when you skim the monitor edge." 44
 
@@ -4335,6 +4435,7 @@ function Show-SettingsDialog {
       try {
         $form2 = $this.FindForm()
         $slide = [System.Windows.Forms.CheckBox](Invoke-FindDockControl $form2 "limitdock_slideCheck")
+        $startupCtl = [System.Windows.Forms.CheckBox](Invoke-FindDockControl $form2 "limitdock_startupCheck")
         $modeCtl = [System.Windows.Forms.ComboBox](Invoke-FindDockControl $form2 "limitdock_dockMode")
         $edgeCtl = [System.Windows.Forms.ComboBox](Invoke-FindDockControl $form2 "limitdock_dockEdge")
         $ag = [System.Windows.Forms.CheckBox](Invoke-FindDockControl $form2 "limitdock_agCheck")
@@ -4372,6 +4473,8 @@ function Show-SettingsDialog {
 
         $script:Settings.dockMode = $newDockMode
         $script:Settings.dockEdge = $newDockEdge
+        $script:Settings.startWithWindows = [bool]$startupCtl.Checked
+        Set-LimitDockStartup ([bool]$startupCtl.Checked)
         $script:DockEdge = $newDockEdge
         if ($newDockMode -eq "reserved") {
           $script:Settings.autoHide = $false

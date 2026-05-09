@@ -8,6 +8,7 @@ LimitDock is a working status bar, not a dashboard. Its purpose is to keep quota
 - Preserve exhausted rows. A 0 percent model is meaningful and must remain visible unless the user hides it.
 - Prefer model plus window in the row label, with reset countdown in its own column. A row should make it clear what model or plan bucket is being metered and when it resets without repeating the window twice.
 - Keep local state local. `settings.json` is personal and ignored; `settings.example.json` is the shareable default.
+- Make startup opt-in. The Windows Startup shortcut is controlled from Settings and can be removed by clearing the same checkbox.
 
 ## Ribbon Density
 

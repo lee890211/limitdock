@@ -60,7 +60,8 @@ The script removes local `settings.json` before creating `dist/LimitDock-<versio
 3. Start `dist\LimitDock-vYYYYMMDD\LimitDock.exe` when present, or `run-limitdock.ps1` from the release folder when ps2exe is unavailable.
 4. Open the tray menu and verify `Hide Status Bar`, `Settings`, and `Exit`.
 5. Switch overlay/reserved and each dock edge. In reserved mode, maximize a normal window and verify it does not cover the reserved bar.
-6. Double-click quota cards and verify hidden rows can be restored.
+6. Toggle `Start LimitDock when Windows starts`, verify the user Startup shortcut appears, then clear it and verify the shortcut is removed.
+7. Double-click quota cards and verify hidden rows can be restored.
 
 ## Future Split
 

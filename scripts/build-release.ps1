@@ -77,7 +77,7 @@ if (-not $ps2exe) {
     -inputFile (Join-Path $RepoRoot "LimitDock.ps1") `
     -outputFile (Join-Path $ReleaseDir "LimitDock.exe") `
     -title "LimitDock" `
-    -description "Windows HUD statusline for OpenUsage.sh" `
+    -description "Windows desktop dock for remaining agent quota" `
     -product "LimitDock" `
     -version $exeVersion `
     -noConsole `
@@ -90,10 +90,10 @@ if ($IncludeOpenUsageBinary -and (-not $SkipOpenUsageDownload)) {
   if (Test-Path -LiteralPath (Join-Path $openUsageDir "openusage.exe")) {
     Copy-Item -LiteralPath $openUsageDir -Destination (Join-Path $ReleaseDir "engine\downloads\openusage_windows_amd64") -Recurse -Force
   } else {
-    Write-Warning "OpenUsage.sh binary is not cached locally. First run will download it unless LimitDock is launched with -NoDownload."
+    Write-Warning "openusage binary is not cached locally. First run will download it unless LimitDock is launched with -NoDownload."
   }
 } else {
-  Write-Host "OpenUsage.sh binary not bundled; first run will download the official Windows release."
+  Write-Host "openusage binary not bundled; first run will download the official Windows release."
 }
 
 Remove-Item -LiteralPath (Join-Path $ReleaseDir "settings.json") -Force -ErrorAction SilentlyContinue

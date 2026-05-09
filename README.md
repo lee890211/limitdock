@@ -1,6 +1,6 @@
 # LimitDock
 
-LimitDock is a compact Windows status dock for agent quota telemetry. It turns local usage/quota output into an always-visible desktop ribbon, focused on one thing: how much model quota is left, and when it resets.
+LimitDock is a compact Windows desktop dock that shows remaining agent quota at a glance. It turns local usage/quota output into an always-visible desktop ribbon, focused on one thing: how much model quota is left, and when it resets.
 
 ![LimitDock top or bottom ribbon](docs/images/manual-ribbon.png)
 
@@ -53,6 +53,8 @@ LimitDock supports two display modes:
 - `overlay`: floats above other windows. The pin icon appears only in overlay mode.
 
 Edges are `bottom`, `top`, `left`, and `right`. You can change display mode and edge from `Settings`; docking choices are stored in local `settings.json`.
+
+`Start LimitDock when Windows starts` is also in `Settings`. It creates a per-user Startup shortcut to `launch-limitdock.vbs` when that launcher is available, so Windows can start the same extracted release folder after sign-in without administrator rights. Turn the checkbox off to remove the shortcut.
 
 ## Install
 
