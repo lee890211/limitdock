@@ -67,6 +67,8 @@ function Load-LimitDockSettings {
     autoHide = $false
     dockMode = "overlay"
     dockEdge = "bottom"
+    statusBarVisible = $true
+    hiddenQuotaBands = [pscustomobject]@{}
     refreshSeconds = 30
     antigravity = [pscustomobject]@{
       enabled = $true
@@ -122,10 +124,22 @@ function Load-LimitDockSettings {
       $settings | Add-Member -NotePropertyName dockEdge -NotePropertyValue $defaults.dockEdge -Force
     }
     $de = ([string]$settings.dockEdge).Trim().ToLowerInvariant()
-    if (($de -ne "top") -and ($de -ne "bottom")) {
+    if (($de -ne "top") -and ($de -ne "bottom") -and ($de -ne "left") -and ($de -ne "right")) {
       $de = $defaults.dockEdge
     }
     $settings.dockEdge = $de
+    if (-not ($settings.PSObject.Properties.Name -contains "statusBarVisible")) {
+      $settings | Add-Member -NotePropertyName statusBarVisible -NotePropertyValue $defaults.statusBarVisible -Force
+    }
+    if ($null -eq $settings.statusBarVisible) {
+      $settings.statusBarVisible = $defaults.statusBarVisible
+    }
+    if (-not ($settings.PSObject.Properties.Name -contains "hiddenQuotaBands")) {
+      $settings | Add-Member -NotePropertyName hiddenQuotaBands -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if ($null -eq $settings.hiddenQuotaBands) {
+      $settings.hiddenQuotaBands = [pscustomobject]@{}
+    }
     if (-not ($settings.PSObject.Properties.Name -contains "refreshSeconds")) {
       $settings | Add-Member -NotePropertyName refreshSeconds -NotePropertyValue $defaults.refreshSeconds -Force
     }
@@ -156,6 +170,35 @@ function Save-LimitDockSettings {
   } catch {
     Write-Log "Failed to save settings: $($_.Exception.Message)"
   }
+}
+
+function ConvertTo-LdHashtable {
+  param([AllowNull()]$Value)
+  $h = @{}
+  if ($null -eq $Value) {
+    return $h
+  }
+  if ($Value -is [hashtable]) {
+    foreach ($k in $Value.Keys) {
+      $v = $Value[$k]
+      if (($v -is [hashtable]) -or ($v -is [pscustomobject])) {
+        $h[[string]$k] = ConvertTo-LdHashtable $v
+      } else {
+        $h[[string]$k] = $v
+      }
+    }
+    return $h
+  }
+  try {
+    foreach ($p in $Value.PSObject.Properties) {
+      if (($p.Value -is [hashtable]) -or ($p.Value -is [pscustomobject])) {
+        $h[[string]$p.Name] = ConvertTo-LdHashtable $p.Value
+      } else {
+        $h[[string]$p.Name] = $p.Value
+      }
+    }
+  } catch {}
+  return $h
 }
 
 trap {
@@ -776,6 +819,9 @@ function Get-ResetShortText {
   elseif ($mn -eq "quota_pro") {
     [void]$names.Add("quota_pro_reset")
   }
+  elseif ($mn -in @("plan_percent_used", "plan_api_percent_used", "plan_auto_percent_used")) {
+    [void]$names.Add("billing_cycle_end")
+  }
 
   foreach ($name in @( $names.ToArray())) {
     if (-not ($Snapshot.resets.PSObject.Properties.Name -contains $name)) {
@@ -854,6 +900,15 @@ function Format-QuotaBandCaption {
     if ([string]::IsNullOrWhiteSpace([string]$WindowTextOrNull)) {
       $WindowTextOrNull = "7d"
     }
+  }
+  elseif ($k -eq "plan_percent_used") {
+    $model = "plan"
+  }
+  elseif ($k -eq "plan_api_percent_used") {
+    $model = "api"
+  }
+  elseif ($k -eq "plan_auto_percent_used") {
+    $model = "auto"
   }
 
   $model = ([string]$model).Trim(" _-")
@@ -1024,6 +1079,9 @@ function Test-QuotaFamilyMetricKey {
   if (($k -eq "usage_five_hour") -or ($k.StartsWith("usage_seven_day"))) {
     return $true
   }
+  if ($k -in @("plan_percent_used", "plan_api_percent_used", "plan_auto_percent_used")) {
+    return $true
+  }
   return $k.EndsWith("_quota")
 }
 
@@ -1043,9 +1101,10 @@ function Test-DisplayQuotaMetricKey {
     if ($core -in @("primary", "secondary", "code_review")) {
       return $true
     }
-    if ($core -match "^(bengalfox|bengal_fox)$") {
-      return $false
-    }
+  }
+
+  if ($k -in @("plan_percent_used", "plan_api_percent_used", "plan_auto_percent_used")) {
+    return ($providerKey -eq "cursor")
   }
 
   return $true
@@ -1291,6 +1350,9 @@ function Collect-BandsFromMetrics {
     "quota",
     "quota_pro",
     "quota_flash",
+    "plan_percent_used",
+    "plan_api_percent_used",
+    "plan_auto_percent_used",
     "rate_limit_secondary",
     "rate_limit_code_review_primary",
     "rate_limit_code_review_secondary",
@@ -1749,8 +1811,11 @@ function Convert-SnapshotToCard {
   $critLine = [int]$script:Settings.gaugeCritPercent
   if (-not $critLine) { $critLine = 90 }
   $gaugeCap = [int]$script:Settings.gaugeMaxBands
-  if (-not $gaugeCap) { $gaugeCap = 4 }
-  if ($gaugeCap -lt [int]$script:DockRibbonGaugeCap) {
+  if (-not $gaugeCap) { $gaugeCap = [int]$script:DockRibbonGaugeCap }
+  if ($gaugeCap -lt 1) {
+    $gaugeCap = 1
+  }
+  if ($gaugeCap -gt [int]$script:DockRibbonGaugeCap) {
     $gaugeCap = [int]$script:DockRibbonGaugeCap
   }
 
@@ -1817,6 +1882,9 @@ function Convert-SnapshotToCard {
       "quota",
       "quota_pro",
       "quota_flash",
+      "plan_percent_used",
+      "plan_api_percent_used",
+      "plan_auto_percent_used",
       "rate_limit_secondary",
       "rate_limit_code_review_primary",
       "rate_limit_code_review_secondary",
@@ -2316,6 +2384,10 @@ function Show-QuotaBandPicker {
         }
       }
       $script:QuotaBandHidden[$sk] = $newHidden
+      if ($script:Settings) {
+        $script:Settings.hiddenQuotaBands = $script:QuotaBandHidden
+        Save-LimitDockSettings $script:Settings
+      }
       Render-Cards
     }
   } finally {
@@ -2770,6 +2842,7 @@ function New-SettingsButton {
   $wrap.Width = 28
   $wrap.Height = 28
   $wrap.Margin = New-Object System.Windows.Forms.Padding(1, 1, 1, 1)
+  $wrap.Cursor = [System.Windows.Forms.Cursors]::SizeAll
   Set-CardLabelStyle $wrap "status"
 
   $gear = New-Object System.Windows.Forms.PictureBox
@@ -2786,6 +2859,69 @@ function New-SettingsButton {
   return $wrap
 }
 
+function New-DragHandleBitmap {
+  $bitmap = New-Object System.Drawing.Bitmap 18, 18
+  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+  $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+  $graphics.Clear([System.Drawing.Color]::Transparent)
+  $brush = New-Object System.Drawing.SolidBrush $script:Theme.MutedFore
+  foreach ($y in @(4, 9, 14)) {
+    $graphics.FillEllipse($brush, 7, $y, 4, 4)
+  }
+  $brush.Dispose()
+  $graphics.Dispose()
+  return $bitmap
+}
+
+function New-DockDragHandleButton {
+  $wrap = New-Object System.Windows.Forms.Panel
+  $wrap.AutoSize = $false
+  $wrap.Width = 28
+  $wrap.Height = 28
+  $wrap.Margin = New-Object System.Windows.Forms.Padding(1, 1, 1, 1)
+  Set-CardLabelStyle $wrap "status"
+
+  $dots = New-Object System.Windows.Forms.PictureBox
+  $dots.Width = 18
+  $dots.Height = 18
+  $dots.Left = 5
+  $dots.Top = 5
+  $dots.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+  $dots.Cursor = [System.Windows.Forms.Cursors]::SizeAll
+  $dots.Image = New-DragHandleBitmap
+
+  $onDown = {
+    param($sender, $args)
+    try {
+      if ($args.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+        $script:DockDragActive = $true
+      }
+    } catch {}
+  }
+  $onUp = {
+    param($sender, $args)
+    try {
+      if (-not [bool]$script:DockDragActive) {
+        return
+      }
+      $script:DockDragActive = $false
+      $edge = Get-NearestDockEdgeFromPoint ([System.Windows.Forms.Cursor]::Position)
+      if ($edge) {
+        Set-DockEdgeAndApply $edge
+      }
+    } catch {
+      Write-Log "Dock snap failed: $($_.Exception.Message)"
+    }
+  }
+  $wrap.Add_MouseDown($onDown)
+  $wrap.Add_MouseUp($onUp)
+  $dots.Add_MouseDown($onDown)
+  $dots.Add_MouseUp($onUp)
+
+  $wrap.Controls.Add($dots) | Out-Null
+  return $wrap
+}
+
 function New-ToolRail {
   $rail = New-Object System.Windows.Forms.FlowLayoutPanel
   $rail.AutoSize = $false
@@ -2797,21 +2933,30 @@ function New-ToolRail {
   $rail.Padding = New-Object System.Windows.Forms.Padding(1, 4, 1, 2)
   Set-CardLabelStyle $rail "status"
 
-  $pinBtn = New-AutoHideButton {
-    try { Toggle-AutoHide } catch { Write-Log "Toggle auto-hide failed: $($_.Exception.Message)" }
-  }
+  $pinBtn = $null
+  $dragBtn = $null
   $settingsBtn = New-SettingsButton {
     try { Show-SettingsDialog } catch { Write-Log "Settings open failed: $($_.Exception.Message)" }
   }
-  [void]$rail.Controls.Add($pinBtn)
+  if ((Normalize-DockMode $script:DockMode) -eq "reserved") {
+    $dragBtn = New-DockDragHandleButton
+    [void]$rail.Controls.Add($dragBtn)
+  }
   [void]$rail.Controls.Add($settingsBtn)
+  if ((Normalize-DockMode $script:DockMode) -eq "overlay") {
+    $pinBtn = New-AutoHideButton {
+      try { Toggle-AutoHide } catch { Write-Log "Toggle auto-hide failed: $($_.Exception.Message)" }
+    }
+    [void]$rail.Controls.Add($pinBtn)
+  }
 
   try {
     if (-not ($script:LdRibbonToolTip -is [System.Windows.Forms.ToolTip])) {
       $script:LdRibbonToolTip = New-Object System.Windows.Forms.ToolTip
     }
-    $script:LdRibbonToolTip.SetToolTip($pinBtn, (Get-AutoHidePinLabelText))
+    if ($dragBtn) { $script:LdRibbonToolTip.SetToolTip($dragBtn, "Drag to dock edge") }
     $script:LdRibbonToolTip.SetToolTip($settingsBtn, "Settings")
+    if ($pinBtn) { $script:LdRibbonToolTip.SetToolTip($pinBtn, (Get-AutoHidePinLabelText)) }
   } catch {}
   return $rail
 }
@@ -2887,9 +3032,19 @@ public static class LimitDockNative {
     UIntPtr query = SHAppBarMessage(0x00000002, ref data);
     int width = Math.Max(1, right - left);
     int height = Math.Max(1, bottom - top);
-    if (edge == 1) {
+    if (edge == 0) {
       data.rc.left = left;
       data.rc.right = left + width;
+      data.rc.top = top;
+      data.rc.bottom = top + height;
+    } else if (edge == 1) {
+      data.rc.left = left;
+      data.rc.right = left + width;
+      data.rc.top = top;
+      data.rc.bottom = top + height;
+    } else if (edge == 2) {
+      data.rc.right = right;
+      data.rc.left = right - width;
       data.rc.top = top;
       data.rc.bottom = top + height;
     } else if (edge == 3) {
@@ -2969,6 +3124,12 @@ function Normalize-DockEdge {
   if (($e -eq "top") -or ($e -eq "up")) {
     return "top"
   }
+  if (($e -eq "left") -or ($e -eq "start")) {
+    return "left"
+  }
+  if (($e -eq "right") -or ($e -eq "end")) {
+    return "right"
+  }
   return "bottom"
 }
 
@@ -2978,6 +3139,7 @@ $script:Settings = Load-LimitDockSettings
 [int]$script:DockRefreshSeconds = [Math]::Max(5, [int]$script:Settings.refreshSeconds)
 [string]$script:DockMode = Normalize-DockMode $script:Settings.dockMode
 [string]$script:DockEdge = Normalize-DockEdge $script:Settings.dockEdge
+[bool]$script:StatusBarVisible = [bool]$script:Settings.statusBarVisible
 [bool]$script:AppBarRegistered = $false
 [uint32]$script:AppBarCallbackMessage = 0x8001
 $script:ReservedBaseWorkBottom = $null
@@ -3001,17 +3163,17 @@ $form.TopMost = $true
 $form.ShowInTaskbar = $false
 $form.BackColor = $script:Theme.Bar
 $form.ForeColor = $script:Theme.Fore
-$form.Height = 92
+$form.Height = 84
+[int]$script:DockHorizontalHeight = 84
+[int]$script:DockSideWidth = 456
 [int]$script:DockCardChipWidth = 420
-[int]$script:DockCardChipHeight = 78
+[int]$script:DockCardChipHeight = 70
 [int]$script:DockRibbonGaugeCap = 4
 # Per snapshot rotate index for cards with more model/window rows than the ribbon can show.
 if (-not ($script:QuotaBandOffsets -is [hashtable])) {
   $script:QuotaBandOffsets = @{}
 }
-if (-not ($script:QuotaBandHidden -is [hashtable])) {
-  $script:QuotaBandHidden = @{}
-}
+$script:QuotaBandHidden = ConvertTo-LdHashtable $script:Settings.hiddenQuotaBands
 $form.Opacity = 0.98
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
 
@@ -3025,6 +3187,8 @@ $form.Width = $script:Screen.Width
 $form.Left = $script:Screen.Left
 $script:ShowTop = $script:Bounds.Bottom - $taskbarReserve - $form.Height - 2
 $script:HideTop = $script:Bounds.Bottom + 2
+$script:ShowLeft = $script:Bounds.Left
+$script:HideLeft = $script:Bounds.Left
 $script:TaskbarReserve = $taskbarReserve
 $script:AutoHideEnabled = [bool]$script:Settings.autoHide
 $form.Top = $script:ShowTop
@@ -3090,8 +3254,14 @@ function Restore-LimitDockSystemWorkArea {
 }
 
 function Get-DockEdgeAppBarCode {
+  if ((Normalize-DockEdge $script:DockEdge) -eq "left") {
+    return 0
+  }
   if ((Normalize-DockEdge $script:DockEdge) -eq "top") {
     return 1
+  }
+  if ((Normalize-DockEdge $script:DockEdge) -eq "right") {
+    return 2
   }
   return 3
 }
@@ -3113,6 +3283,68 @@ function Get-LimitDockDpiScale {
     }
   } catch {}
   return 1.0
+}
+
+function Test-DockEdgeIsSide {
+  param([AllowNull()][object]$Edge)
+  $e = Normalize-DockEdge $Edge
+  return (($e -eq "left") -or ($e -eq "right"))
+}
+
+function Set-DockFormLayoutForEdge {
+  param([string]$Edge)
+  $e = Normalize-DockEdge $Edge
+  [bool]$side = Test-DockEdgeIsSide $e
+  if ($side) {
+    $form.Width = [int]$script:DockSideWidth
+    $form.Height = [Math]::Max(320, [int]($script:Screen.Bottom - $script:Screen.Top))
+    $panel.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
+    $panel.WrapContents = $false
+    $panel.Padding = New-Object System.Windows.Forms.Padding(6, 6, 6, 6)
+    if ($statusLabel) { $statusLabel.Visible = $false }
+  } else {
+    $form.Width = [int]$script:Screen.Width
+    $form.Height = [int]$script:DockHorizontalHeight
+    $panel.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+    $panel.WrapContents = $false
+    $panel.Padding = New-Object System.Windows.Forms.Padding(8, 5, 8, 4)
+    if ($statusLabel) { $statusLabel.Visible = $true }
+  }
+}
+
+function Move-LimitDockToDockState {
+  param([bool]$Shown)
+  [int]$left = $script:ShowLeft
+  [int]$top = $script:ShowTop
+  if (-not $Shown) {
+    $left = $script:HideLeft
+    $top = $script:HideTop
+  }
+  Set-LimitDockWindowBounds $left $top $form.Width $form.Height
+}
+
+function Get-NearestDockEdgeFromPoint {
+  param([System.Drawing.Point]$Point)
+  Update-LimitDockScreenMetrics
+  $candidates = @(
+    @{ Edge = "left"; Distance = [Math]::Abs([int]$Point.X - [int]$script:Bounds.Left) },
+    @{ Edge = "right"; Distance = [Math]::Abs([int]$script:Bounds.Right - [int]$Point.X) },
+    @{ Edge = "top"; Distance = [Math]::Abs([int]$Point.Y - [int]$script:Bounds.Top) },
+    @{ Edge = "bottom"; Distance = [Math]::Abs([int]$script:Bounds.Bottom - [int]$Point.Y) }
+  )
+  return [string](@($candidates | Sort-Object Distance | Select-Object -First 1)[0].Edge)
+}
+
+function Set-DockEdgeAndApply {
+  param([AllowNull()][object]$Edge)
+  [string]$newEdge = Normalize-DockEdge $Edge
+  $script:DockEdge = $newEdge
+  if ($script:Settings) {
+    $script:Settings.dockEdge = $newEdge
+    Save-LimitDockSettings $script:Settings
+  }
+  Apply-DockMode $script:DockMode
+  Render-Cards
 }
 
 function Set-LimitDockWindowBounds {
@@ -3156,22 +3388,28 @@ function Unregister-LimitDockAppBar {
 
 function Set-OverlayDockBounds {
   Update-LimitDockScreenMetrics
-  [int]$nominalHeight = [Math]::Max(76, ([int]$script:DockCardChipHeight + 14))
-  if ($form.Height -lt 60) {
-    $form.Height = $nominalHeight
-  }
-  if ((Normalize-DockEdge $script:DockEdge) -eq "top") {
+  Set-DockFormLayoutForEdge $script:DockEdge
+  [string]$edge = Normalize-DockEdge $script:DockEdge
+  $script:ShowLeft = $script:Bounds.Left
+  $script:HideLeft = $script:Bounds.Left
+  if ($edge -eq "top") {
     $script:ShowTop = $script:Screen.Top + 2
     $script:HideTop = $script:Bounds.Top - $form.Height - 2
+  } elseif ($edge -eq "left") {
+    $script:ShowLeft = $script:Screen.Left + 2
+    $script:HideLeft = $script:Bounds.Left - $form.Width - 2
+    $script:ShowTop = $script:Screen.Top
+    $script:HideTop = $script:Screen.Top
+  } elseif ($edge -eq "right") {
+    $script:ShowLeft = $script:Screen.Right - $form.Width - 2
+    $script:HideLeft = $script:Bounds.Right + 2
+    $script:ShowTop = $script:Screen.Top
+    $script:HideTop = $script:Screen.Top
   } else {
     $script:ShowTop = $script:Screen.Bottom - $form.Height - 2
     $script:HideTop = $script:Bounds.Bottom + 2
   }
-  [int]$targetTop = $script:ShowTop
-  if ($script:AutoHideEnabled) {
-    $targetTop = $script:HideTop
-  }
-  Set-LimitDockWindowBounds $script:Bounds.Left $targetTop $script:Bounds.Width $form.Height
+  Move-LimitDockToDockState (-not [bool]$script:AutoHideEnabled)
   Write-Log "Overlay dock bounds left=$($form.Left) top=$($form.Top) width=$($form.Width) height=$($form.Height) showTop=$script:ShowTop hideTop=$script:HideTop reserve=$script:TaskbarReserve autoHide=$script:AutoHideEnabled"
 }
 
@@ -3181,6 +3419,7 @@ function Set-ReservedDockBounds {
   }
   try {
     Update-LimitDockScreenMetrics
+    Set-DockFormLayoutForEdge $script:DockEdge
     if ((-not $script:AppBarRegistered) -or ($null -eq $script:ReservedBaseWorkArea)) {
       $script:ReservedBaseWorkArea = Capture-LimitDockWorkArea
       $script:ReservedBaseWorkBottom = [int]$script:Screen.Bottom
@@ -3194,13 +3433,6 @@ function Set-ReservedDockBounds {
       }
     }
 
-    [int]$barHeight = [Math]::Max([int]$form.Height, ([int]$script:DockCardChipHeight + 14))
-    if ($barHeight -lt 76) {
-      $barHeight = 76
-    }
-    if ($form.Height -lt 60) {
-      $form.Height = $barHeight
-    }
     $baseArea = $script:ReservedBaseWorkArea
     [int]$baseLeft = [int]$baseArea.Left
     [int]$baseTop = [int]$baseArea.Top
@@ -3213,6 +3445,18 @@ function Set-ReservedDockBounds {
       $baseBottom = [int]$script:Screen.Bottom
     }
     [string]$edge = Normalize-DockEdge $script:DockEdge
+    [bool]$side = Test-DockEdgeIsSide $edge
+    [int]$barHeight = [Math]::Max([int]$form.Height, ([int]$script:DockCardChipHeight + 14))
+    [int]$barWidth = [Math]::Max(240, [int]$form.Width)
+    if (-not $side -and $barHeight -lt 76) {
+      $barHeight = 76
+    }
+    if ($side) {
+      $barHeight = [Math]::Max(320, ($baseBottom - $baseTop))
+      $form.Height = $barHeight
+    } elseif ($form.Height -lt 60) {
+      $form.Height = $barHeight
+    }
     [int]$desiredLeft = $baseLeft
     [int]$desiredRight = $baseRight
     [int]$desiredTop = $baseBottom - $barHeight
@@ -3220,6 +3464,16 @@ function Set-ReservedDockBounds {
     if ($edge -eq "top") {
       $desiredTop = $baseTop
       $desiredBottom = $baseTop + $barHeight
+    } elseif ($edge -eq "left") {
+      $desiredTop = $baseTop
+      $desiredBottom = $baseBottom
+      $desiredLeft = $baseLeft
+      $desiredRight = $baseLeft + $barWidth
+    } elseif ($edge -eq "right") {
+      $desiredTop = $baseTop
+      $desiredBottom = $baseBottom
+      $desiredLeft = $baseRight - $barWidth
+      $desiredRight = $baseRight
     }
 
     [double]$dpiScale = Get-LimitDockDpiScale
@@ -3245,6 +3499,12 @@ function Set-ReservedDockBounds {
       elseif (($edge -eq "top") -and ([int]$reportedWorkArea.Top -gt 0) -and ([int]$reportedWorkArea.Top -lt ($desiredBottom - 4))) {
         $autoScale = [double]$desiredBottom / [double]$reportedWorkArea.Top
       }
+      elseif (($edge -eq "left") -and ([int]$reportedWorkArea.Left -gt 0) -and ([int]$reportedWorkArea.Left -lt ($desiredRight - 4))) {
+        $autoScale = [double]$desiredRight / [double]$reportedWorkArea.Left
+      }
+      elseif (($edge -eq "right") -and ([int]$reportedWorkArea.Right -gt 0) -and ([int]$reportedWorkArea.Right -lt ($desiredLeft - 4))) {
+        $autoScale = [double]$desiredLeft / [double]$reportedWorkArea.Right
+      }
     }
     if (($autoScale -gt 1.05) -and ($autoScale -lt 3.0)) {
       $appLeft = [int][Math]::Round([double]$desiredLeft * $autoScale)
@@ -3265,6 +3525,8 @@ function Set-ReservedDockBounds {
 
     $script:ShowTop = $desiredTop
     $script:HideTop = $desiredTop
+    $script:ShowLeft = $desiredLeft
+    $script:HideLeft = $desiredLeft
     $workArea = @{
       Left   = $baseLeft
       Top    = $baseTop
@@ -3273,9 +3535,14 @@ function Set-ReservedDockBounds {
     }
     if ($edge -eq "top") {
       $workArea.Top = $desiredBottom
+    } elseif ($edge -eq "left") {
+      $workArea.Left = $desiredRight
+    } elseif ($edge -eq "right") {
+      $workArea.Right = $desiredLeft
     } else {
       $workArea.Bottom = $desiredTop
     }
+    Set-LimitDockSystemWorkArea $workArea
     Set-LimitDockWindowBounds $desiredLeft $desiredTop ($desiredRight - $desiredLeft) ($desiredBottom - $desiredTop)
     $reportedText = ""
     if ($reportedWorkArea) {
@@ -3293,6 +3560,15 @@ function Set-ReservedDockBounds {
 function Apply-DockMode {
   param([AllowNull()][object]$Mode)
   $script:DockMode = Normalize-DockMode $Mode
+  if ($script:Settings) {
+    $script:Settings.dockMode = $script:DockMode
+    $script:Settings.dockEdge = Normalize-DockEdge $script:DockEdge
+  }
+  if (-not [bool]$script:StatusBarVisible) {
+    Unregister-LimitDockAppBar
+    Update-AutoHideButtonText
+    return
+  }
   if ($script:DockMode -eq "reserved") {
     $script:AutoHideEnabled = $false
     if ($script:Settings) {
@@ -3307,10 +3583,6 @@ function Apply-DockMode {
       [System.Windows.Forms.Application]::DoEvents()
     } catch {}
     Set-OverlayDockBounds
-  }
-  if ($script:Settings) {
-    $script:Settings.dockMode = $script:DockMode
-    $script:Settings.dockEdge = Normalize-DockEdge $script:DockEdge
   }
   Update-AutoHideButtonText
 }
@@ -3341,12 +3613,12 @@ $notify.Text = "LimitDock"
 $notify.Icon = [System.Drawing.SystemIcons]::Information
 $notify.Visible = $true
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$autoHideItem = $menu.Items.Add((Get-AutoHidePinLabelText))
+$visibilityItem = $menu.Items.Add("")
 $settingsItem = $menu.Items.Add("Settings")
 $exitItem = $menu.Items.Add("Exit")
 $notify.ContextMenuStrip = $menu
 $notify.add_DoubleClick({
-  try { $form.Visible = -not $form.Visible } catch { Write-Log "Toggle visibility failed: $($_.Exception.Message)" }
+  try { Set-StatusBarVisible (-not [bool]$script:StatusBarVisible) } catch { Write-Log "Toggle visibility failed: $($_.Exception.Message)" }
 })
 $exitItem.add_Click({
   try { $form.Close() } catch { Write-Log "Exit failed: $($_.Exception.Message)" }
@@ -3356,31 +3628,75 @@ $settingsItem.add_Click({
 })
 Write-Log "Created tray icon"
 
+function Update-StatusBarVisibilityMenu {
+  try {
+    if ($null -ne $visibilityItem) {
+      if ([bool]$script:StatusBarVisible) {
+        $visibilityItem.Text = "Hide Status Bar"
+      } else {
+        $visibilityItem.Text = "Show Status Bar"
+      }
+    }
+  } catch {}
+}
+Update-StatusBarVisibilityMenu
+
 function Set-AutoHide {
   param([bool]$Enabled)
   if ($script:DockMode -eq "reserved") {
     $Enabled = $false
   }
   $script:AutoHideEnabled = $Enabled
+  if (-not [bool]$script:StatusBarVisible) {
+    if ($script:Settings) {
+      $script:Settings.autoHide = [bool]$script:AutoHideEnabled
+      Save-LimitDockSettings $script:Settings
+    }
+    Update-AutoHideButtonText
+    Sync-AutoHidePinGlyph
+    return
+  }
   $form.Visible = $true
   if ($form.WindowState -ne [System.Windows.Forms.FormWindowState]::Normal) {
     $form.WindowState = [System.Windows.Forms.FormWindowState]::Normal
   }
   $form.TopMost = $true
-  [int]$targetTop = $script:ShowTop
-  if ($script:AutoHideEnabled) {
-    $autoHideItem.Text = Get-AutoHidePinLabelText
-    $targetTop = $script:HideTop
-  } else {
-    $autoHideItem.Text = Get-AutoHidePinLabelText
-  }
-  Set-LimitDockWindowBounds $form.Left $targetTop $form.Width $form.Height
+  Move-LimitDockToDockState (-not [bool]$script:AutoHideEnabled)
   if ($script:Settings) {
     $script:Settings.autoHide = [bool]$script:AutoHideEnabled
     Save-LimitDockSettings $script:Settings
   }
   Update-AutoHideButtonText
   Sync-AutoHidePinGlyph
+}
+
+function Set-StatusBarVisible {
+  param([bool]$Visible)
+  $script:StatusBarVisible = [bool]$Visible
+  if ($script:Settings) {
+    if (-not ($script:Settings.PSObject.Properties.Name -contains "statusBarVisible")) {
+      $script:Settings | Add-Member -NotePropertyName statusBarVisible -NotePropertyValue $script:StatusBarVisible -Force
+    } else {
+      $script:Settings.statusBarVisible = $script:StatusBarVisible
+    }
+    Save-LimitDockSettings $script:Settings
+  }
+  Update-StatusBarVisibilityMenu
+
+  if (-not [bool]$script:StatusBarVisible) {
+    try { $timer.Stop() } catch {}
+    try { $hoverTimer.Stop() } catch {}
+    Unregister-LimitDockAppBar
+    try { $form.Hide() } catch { $form.Visible = $false }
+    return
+  }
+
+  try { $timer.Start() } catch {}
+  try { $hoverTimer.Start() } catch {}
+  $form.Visible = $true
+  Apply-DockMode $script:DockMode
+  Set-AutoHide ([bool]$script:AutoHideEnabled)
+  Render-Cards
 }
 
 function Toggle-AutoHide {
@@ -3630,6 +3946,8 @@ function Show-SettingsDialog {
     $edgeCombo.Name = "limitdock_dockEdge"
     [void]$edgeCombo.Items.Add("bottom")
     [void]$edgeCombo.Items.Add("top")
+    [void]$edgeCombo.Items.Add("left")
+    [void]$edgeCombo.Items.Add("right")
     $edgeCombo.SelectedItem = (Normalize-DockEdge $script:DockEdge)
     $scLd.Controls.Add($edgeCombo)
     $y0 += 34
@@ -3659,10 +3977,10 @@ function Show-SettingsDialog {
     if ($bands -lt 1) {
       $bands = 1
     }
-    if ($bands -gt 8) {
-      $bands = 8
+    if ($bands -gt [int]$script:DockRibbonGaugeCap) {
+      $bands = [int]$script:DockRibbonGaugeCap
     }
-    [void](Add-NudPair $scLd ([ref]$y0) "Max horizontal gauge rows rendered per snapshot" 1 8 $bands "limitdock_bandMax")
+    [void](Add-NudPair $scLd ([ref]$y0) "Max visible quota rows per provider card (1..4)" 1 4 $bands "limitdock_bandMax")
 
     $gw = [int]$script:Settings.gaugeWarnPercent
     $gc = [int]$script:Settings.gaugeCritPercent
@@ -4016,17 +4334,14 @@ function Show-SettingsDialog {
         [int]$newDockRefresh = [Math]::Max(5, [int]$dockRefCtl.Value)
         [string]$newDockMode = Normalize-DockMode $modeCtl.SelectedItem
         [string]$newDockEdge = Normalize-DockEdge $edgeCtl.SelectedItem
-        [string]$oldDockMode = Normalize-DockMode $script:DockMode
-        [string]$oldDockEdge = Normalize-DockEdge $script:DockEdge
-        [bool]$modeChanged = (($oldDockMode -ne $newDockMode) -or ($oldDockEdge -ne $newDockEdge))
 
         $script:Settings.dockMode = $newDockMode
         $script:Settings.dockEdge = $newDockEdge
         $script:DockEdge = $newDockEdge
-        if ($modeChanged) {
+        if ($newDockMode -eq "reserved") {
           $script:Settings.autoHide = $false
         } else {
-          $script:Settings.autoHide = (($newDockMode -eq "overlay") -and [bool]$slide.Checked)
+          $script:Settings.autoHide = [bool]$slide.Checked
         }
         $script:Settings.refreshSeconds = $newDockRefresh
         $script:DockRefreshSeconds = $newDockRefresh
@@ -4119,6 +4434,9 @@ function Show-SettingsDialog {
 }
 
 function Render-Cards {
+  if (-not [bool]$script:StatusBarVisible) {
+    return
+  }
   $oldControls = @($panel.Controls)
   Set-ControlRedraw $panel $false
   $panel.SuspendLayout()
@@ -4155,13 +4473,17 @@ function Render-Cards {
   }
 }
 
-$autoHideItem.add_Click({
-  try { Toggle-AutoHide } catch { Write-Log "Toggle auto-hide failed: $($_.Exception.Message)" }
+$visibilityItem.add_Click({
+  try { Set-StatusBarVisible (-not [bool]$script:StatusBarVisible) } catch { Write-Log "Toggle status bar failed: $($_.Exception.Message)" }
 })
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = [math]::Max(5, $script:DockRefreshSeconds) * 1000
 $timer.Add_Tick({
-  try { Render-Cards } catch { Write-Log "Timer tick failed: $($_.Exception.Message)" }
+  try {
+    if ([bool]$script:StatusBarVisible) {
+      Render-Cards
+    }
+  } catch { Write-Log "Timer tick failed: $($_.Exception.Message)" }
 })
 $timer.Start()
 
@@ -4170,44 +4492,62 @@ $hoverTimer.Interval = 120
 $script:LastRevealAt = [datetime]::MinValue
 $hoverTimer.Add_Tick({
   try {
-    if (-not $script:AutoHideEnabled) {
+    if ((-not [bool]$script:StatusBarVisible) -or (-not [bool]$script:AutoHideEnabled)) {
       return
     }
 
     $cursor = [System.Windows.Forms.Cursor]::Position
-
-    [bool]$edgeTop = ((Normalize-DockEdge $script:DockEdge) -eq "top")
-    if ($edgeTop) {
-      $triggerTop = $script:Bounds.Top
-      $triggerBottom = $script:Screen.Top + 4
+    [string]$edge = Normalize-DockEdge $script:DockEdge
+    [bool]$side = Test-DockEdgeIsSide $edge
+    [bool]$shown = $false
+    if ($side) {
+      $shown = ([Math]::Abs([int]$form.Left - [int]$script:ShowLeft) -le 2)
     } else {
-      $triggerTop = $script:Screen.Bottom - 4
-      $triggerBottom = $script:Bounds.Bottom
+      $shown = ([Math]::Abs([int]$form.Top - [int]$script:ShowTop) -le 2)
     }
 
-    if ($form.Top -eq $script:ShowTop) {
-      if ($edgeTop) {
-        $extendedTop = $script:Bounds.Top
-        $extendedBottom = $script:ShowTop + $form.Height + 40
-      } else {
-        $extendedTop = $script:ShowTop - 40
-        $extendedBottom = $script:Bounds.Bottom
+    if ($shown) {
+      [int]$extendedLeft = [int]$script:ShowLeft
+      [int]$extendedRight = [int]($script:ShowLeft + $form.Width)
+      [int]$extendedTop = [int]$script:ShowTop
+      [int]$extendedBottom = [int]($script:ShowTop + $form.Height)
+      if ($edge -eq "top") {
+        $extendedTop = [int]$script:Bounds.Top
+        $extendedBottom += 40
+      } elseif ($edge -eq "bottom") {
+        $extendedTop -= 40
+        $extendedBottom = [int]$script:Bounds.Bottom
+      } elseif ($edge -eq "left") {
+        $extendedLeft = [int]$script:Bounds.Left
+        $extendedRight += 40
+      } elseif ($edge -eq "right") {
+        $extendedLeft -= 40
+        $extendedRight = [int]$script:Bounds.Right
       }
-      $stayVisible = ($cursor.Y -ge $extendedTop) -and ($cursor.Y -le $extendedBottom)
+      $stayVisible = ($cursor.X -ge $extendedLeft) -and ($cursor.X -le $extendedRight) -and ($cursor.Y -ge $extendedTop) -and ($cursor.Y -le $extendedBottom)
       if ($stayVisible) {
         $script:LastRevealAt = Get-Date
         if ($form.TopMost -ne $true) { $form.TopMost = $true }
       } else {
         $recentReveal = (((Get-Date) - $script:LastRevealAt).TotalMilliseconds -lt 700)
         if (-not $recentReveal) {
-          $form.Top = $script:HideTop
+          Move-LimitDockToDockState $false
         }
       }
     } else {
-      $inTrigger = ($cursor.Y -ge $triggerTop) -and ($cursor.Y -le $triggerBottom)
+      [bool]$inTrigger = $false
+      if ($edge -eq "top") {
+        $inTrigger = ($cursor.Y -ge [int]$script:Bounds.Top) -and ($cursor.Y -le ([int]$script:Screen.Top + 4))
+      } elseif ($edge -eq "bottom") {
+        $inTrigger = ($cursor.Y -ge ([int]$script:Screen.Bottom - 4)) -and ($cursor.Y -le [int]$script:Bounds.Bottom)
+      } elseif ($edge -eq "left") {
+        $inTrigger = ($cursor.X -ge [int]$script:Bounds.Left) -and ($cursor.X -le ([int]$script:Screen.Left + 4))
+      } elseif ($edge -eq "right") {
+        $inTrigger = ($cursor.X -ge ([int]$script:Screen.Right - 4)) -and ($cursor.X -le [int]$script:Bounds.Right)
+      }
       if ($inTrigger) {
         $form.TopMost = $true
-        $form.Top = $script:ShowTop
+        Move-LimitDockToDockState $true
         $form.BringToFront()
         $script:LastRevealAt = Get-Date
       }
@@ -4220,6 +4560,10 @@ $hoverTimer.Start()
 
 $form.Add_Shown({
   try {
+    if (-not [bool]$script:StatusBarVisible) {
+      Set-StatusBarVisible $false
+      return
+    }
     Apply-DockMode $script:DockMode
     Set-AutoHide ([bool]$script:AutoHideEnabled)
     Render-Cards

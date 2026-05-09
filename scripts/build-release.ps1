@@ -42,6 +42,7 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot "assets\icons") -Destination (Join-P
 Copy-Item -LiteralPath (Join-Path $RepoRoot "README.md") -Destination $ReleaseDir -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "NOTES.md") -Destination $ReleaseDir -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "settings.example.json") -Destination $ReleaseDir -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot "docs") -Destination (Join-Path $ReleaseDir "docs") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "run-limitdock.ps1") -Destination $ReleaseDir -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "stop-limitdock.ps1") -Destination $ReleaseDir -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "launch-limitdock.vbs") -Destination $ReleaseDir -Force
