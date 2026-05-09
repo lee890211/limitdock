@@ -2867,7 +2867,6 @@ function New-SettingsButton {
   $wrap.Width = 28
   $wrap.Height = 28
   $wrap.Margin = New-Object System.Windows.Forms.Padding(1, 1, 1, 1)
-  $wrap.Cursor = [System.Windows.Forms.Cursors]::SizeAll
   Set-CardLabelStyle $wrap "status"
 
   $gear = New-Object System.Windows.Forms.PictureBox
