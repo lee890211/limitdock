@@ -1,6 +1,12 @@
 # LimitDock
 
-LimitDock is a compact Windows status bar for OpenUsage.sh quota telemetry. It shows remaining quota only, grouped by provider, model, and reset window.
+LimitDock is a compact Windows agent status dock powered by [OpenUsage.sh](https://github.com/janekbaraniewski/openusage). It shows OpenUsage quota telemetry only, grouped by provider, model, and reset window.
+
+## OpenUsage.sh Dependency
+
+LimitDock is a desktop UI layer for OpenUsage.sh, not a separate quota parser. Provider discovery, telemetry collection, and quota snapshots come from the OpenUsage daemon; LimitDock supervises that daemon, reads `/v1/read-model`, and renders the quota-like rows in a compact Windows dock.
+
+On first run, LimitDock downloads the official Windows release from the [OpenUsage.sh repository](https://github.com/janekbaraniewski/openusage) when the binary is not already bundled.
 
 ## Run
 
