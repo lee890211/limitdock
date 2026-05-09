@@ -67,7 +67,7 @@ Antigravity:
 
 Reserved mode registers a shell appbar for the selected edge and also applies a Windows work area that matches the reserved bounds. This dual path is deliberate: appbar negotiation alone can be inconsistent under DPI scaling and shell edge changes.
 
-The appbar rectangle is scaled for DPI before `SHAppBarMessage`, while the form and fallback work area stay in WinForms screen coordinates. Hide and overlay transitions unregister the appbar and restore the captured work area.
+The appbar rectangle is scaled for DPI before `SHAppBarMessage`, while the form and fallback work area stay in WinForms screen coordinates. UI dimensions are kept in logical pixels and clamped from the active monitor work area instead of multiplying by DPI again. Hide and overlay transitions unregister the appbar and restore the captured work area.
 
 ## Rendering Loop
 

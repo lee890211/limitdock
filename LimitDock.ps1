@@ -2446,7 +2446,7 @@ function New-ProviderCardControl {
     $chipH = 52
   }
   if ($sideDock) {
-    $chipW = [Math]::Max(310, [Math]::Min([int]$script:DockCardChipWidth, ([int]$script:DockSideWidth - 20)))
+    $chipW = [Math]::Max(288, [Math]::Min([int]$script:DockCardChipWidth, ([int]$script:DockSideWidth - 20)))
     $chipH = 116
   }
   [int]$gaugeCapRibbon = [int]$script:DockRibbonGaugeCap
@@ -2530,7 +2530,10 @@ function New-ProviderCardControl {
 
   [int]$padSides = ([int]$container.Padding.Left + [int]$container.Padding.Right)
   [int]$innerW = $chipW - 36 - $padSides
-  if ($innerW -lt 268) {
+  if ($sideDock -and ($innerW -lt 232)) {
+    $innerW = 232
+  }
+  elseif ((-not $sideDock) -and ($innerW -lt 268)) {
     $innerW = 268
   }
 
@@ -2664,8 +2667,8 @@ function New-ProviderCardControl {
       [int]$metaW = 0
       if ($sideDock) {
         $pctW = 42
-        $metaW = 82
-        $capW = [Math]::Max(76, [Math]::Min(118, ($cellW - $metaW - $pctW - 54)))
+        $metaW = 72
+        $capW = [Math]::Max(68, [Math]::Min(106, ($cellW - $metaW - $pctW - 52)))
       }
       [int]$metaLeft = $cellLeft + $capW + 2
       [int]$pctLeft = $metaLeft + $metaW + 2
@@ -2673,7 +2676,7 @@ function New-ProviderCardControl {
         $pctLeft = $cellLeft + $capW + 2
       }
       [int]$gaugeLeft = $pctLeft + $pctW + 6
-      [int]$gaugeW = [Math]::Max(34, ($cellLeft + $cellW - $gaugeLeft - 2))
+      [int]$gaugeW = [Math]::Max(40, ($cellLeft + $cellW - $gaugeLeft - 2))
 
       $cap = New-Object System.Windows.Forms.Label
       $cap.AutoSize = $false
@@ -2931,7 +2934,7 @@ function New-ToolRail {
   [bool]$sideDock = Test-DockEdgeIsSide $script:DockEdge
   if ($sideDock) {
     $rail.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-    $rail.Width = [Math]::Max(310, [Math]::Min([int]$script:DockCardChipWidth, ([int]$script:DockSideWidth - 20)))
+    $rail.Width = [Math]::Max(288, [Math]::Min([int]$script:DockCardChipWidth, ([int]$script:DockSideWidth - 20)))
     $rail.Height = 34
     $rail.Padding = New-Object System.Windows.Forms.Padding(5, 3, 5, 3)
   } else {
@@ -3154,6 +3157,24 @@ function Normalize-DockEdge {
   return "bottom"
 }
 
+function Set-LimitDockResponsiveSizes {
+  param([AllowNull()][object]$WorkingArea)
+
+  [int]$screenW = 1920
+  [int]$screenH = 1080
+  try {
+    if ($null -ne $WorkingArea) {
+      if ([int]$WorkingArea.Width -gt 0) { $screenW = [int]$WorkingArea.Width }
+      if ([int]$WorkingArea.Height -gt 0) { $screenH = [int]$WorkingArea.Height }
+    }
+  } catch {}
+
+  $script:DockHorizontalHeight = [int][Math]::Max(68, [Math]::Min(84, [Math]::Round($screenH * 0.075)))
+  $script:DockSideWidth = [int][Math]::Max(320, [Math]::Min(350, [Math]::Round($screenW * 0.17)))
+  $script:DockCardChipWidth = [int][Math]::Max(380, [Math]::Min(420, [Math]::Round($screenW * 0.22)))
+  $script:DockCardChipHeight = [int][Math]::Max(60, [Math]::Min(70, ([int]$script:DockHorizontalHeight - 14)))
+}
+
 Ensure-OpenUsage
 Ensure-Probe
 $script:Settings = Load-LimitDockSettings
@@ -3184,7 +3205,6 @@ $form.TopMost = $true
 $form.ShowInTaskbar = $false
 $form.BackColor = $script:Theme.Bar
 $form.ForeColor = $script:Theme.Fore
-$form.Height = 84
 [int]$script:DockHorizontalHeight = 84
 [int]$script:DockSideWidth = 350
 [int]$script:DockCardChipWidth = 420
@@ -3204,6 +3224,8 @@ $taskbarReserve = $script:Bounds.Bottom - $script:Screen.Bottom
 if ($taskbarReserve -le 0) {
   $taskbarReserve = 48
 }
+Set-LimitDockResponsiveSizes $script:Screen
+$form.Height = [int]$script:DockHorizontalHeight
 $form.Width = $script:Screen.Width
 $form.Left = $script:Screen.Left
 $script:ShowTop = $script:Bounds.Bottom - $taskbarReserve - $form.Height - 2
@@ -3234,6 +3256,7 @@ function Update-LimitDockScreenMetrics {
     $reserve = 48
   }
   $script:TaskbarReserve = $reserve
+  Set-LimitDockResponsiveSizes $script:Screen
 }
 
 function Capture-LimitDockWorkArea {

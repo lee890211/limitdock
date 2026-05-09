@@ -11,9 +11,9 @@ LimitDock is a working status bar, not a dashboard. Its purpose is to keep quota
 
 ## Ribbon Density
 
-Top and bottom edges use a compact ribbon around 80 to 84 pixels tall. Provider cards are fixed-size chips, and quota rows are capped to a 2 by 2 grid per card. Extra rows remain available through the double-click row picker.
+Top and bottom edges use a compact ribbon around 68 to 84 WinForms logical pixels tall, clamped by the current monitor work area so 1080p and smaller screens do not inherit a 4K-sized footprint. Provider cards are compact chips, and quota rows are capped to a 2 by 2 grid per card. Extra rows remain available through the double-click row picker.
 
-Left and right edges use a narrow vertical strip. Cards stack vertically, and quota rows use one full-width row per model/window. Model labels are deliberately truncated before reset and percent are allowed to disappear.
+Left and right edges use a narrow vertical strip whose width is also clamped by the monitor work area. Cards stack vertically, and quota rows use one full-width row per model/window. Model labels are deliberately truncated before reset and percent are allowed to disappear.
 
 ## Tool Rail
 
