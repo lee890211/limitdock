@@ -18,6 +18,7 @@ Current product rules:
 - Preserve reset time and remaining percent before long model names.
 - Store personal settings in local ignored `settings.json`.
 - Ship `settings.example.json` as the portable configuration reference.
+- Default new installations to reserved mode so maximized windows leave room for the dock.
 
 Release shape:
 

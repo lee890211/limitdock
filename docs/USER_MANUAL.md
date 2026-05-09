@@ -64,8 +64,8 @@ Open `Settings` from the tray.
 
 Display modes:
 
+- `reserved`: the default first-run mode. It reserves a Windows work area so maximized windows leave room for the dock.
 - `overlay`: floats above other windows. Pin/unpin is available only in overlay mode.
-- `reserved`: reserves a Windows work area so maximized windows leave room for the dock.
 
 Dock edges:
 
@@ -74,7 +74,7 @@ Dock edges:
 - `left`
 - `right`
 
-Dock mode, dock edge, auto-hide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`.
+Dock mode, dock edge, auto-hide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time.
 
 ## Provider Behavior
 

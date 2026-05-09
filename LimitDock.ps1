@@ -88,7 +88,7 @@ function Write-Log {
 function Load-LimitDockSettings {
   $defaults = [pscustomobject]@{
     autoHide = $false
-    dockMode = "overlay"
+    dockMode = "reserved"
     dockEdge = "bottom"
     hiddenQuotaBands = [pscustomobject]@{}
     refreshSeconds = 30
@@ -3146,10 +3146,10 @@ function Normalize-DockMode {
   param([AllowNull()][object]$Mode)
   $m = ""
   try { $m = ([string]$Mode).Trim().ToLowerInvariant() } catch {}
-  if (($m -eq "reserved") -or ($m -eq "reserve") -or ($m -eq "appbar")) {
-    return "reserved"
+  if ($m -eq "overlay") {
+    return "overlay"
   }
-  return "overlay"
+  return "reserved"
 }
 
 function Normalize-DockEdge {

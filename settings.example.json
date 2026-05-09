@@ -1,6 +1,6 @@
 {
   "autoHide": false,
-  "dockMode": "overlay",
+  "dockMode": "reserved",
   "dockEdge": "bottom",
   "hiddenQuotaBands": {},
   "antigravity": {

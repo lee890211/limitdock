@@ -49,10 +49,10 @@ Right-click the tray icon:
 
 LimitDock supports two display modes:
 
+- `reserved`: the default first-run mode. It registers a Windows appbar and applies a matching work area so maximized windows leave room for the dock.
 - `overlay`: floats above other windows. The pin icon appears only in overlay mode.
-- `reserved`: registers a Windows appbar and applies a matching work area so maximized windows leave room for the dock.
 
-Edges are `bottom`, `top`, `left`, and `right`. Docking choices are stored in local `settings.json`.
+Edges are `bottom`, `top`, `left`, and `right`. You can change display mode and edge from `Settings`; docking choices are stored in local `settings.json`.
 
 ## Install
 
