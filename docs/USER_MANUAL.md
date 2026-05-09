@@ -25,9 +25,8 @@ LimitDock starts the bundled or downloaded OpenUsage.sh daemon, reads the local 
 The ribbon is best for wide monitors. Each provider card shows:
 
 - provider name and icon
-- model or plan bucket
-- metering window
-- reset countdown
+- model or plan bucket, including the metering window when available
+- reset countdown only in the timing column
 - remaining percent
 - compact gauge
 
@@ -45,7 +44,7 @@ Checked rows are visible. Unchecked rows are hidden. Hidden rows stay in `settin
 
 ![Left or right dock](images/manual-side-dock.png)
 
-Side docking is useful when a horizontal ribbon would take too much vertical space. Provider cards stack vertically, and each quota row gets its own line. Model labels are shortened before reset time or remaining percent are hidden.
+Side docking is useful when a horizontal ribbon would take too much vertical space. Provider cards stack vertically, and each quota row gets its own line. Model labels are shortened before reset countdown or remaining percent are hidden.
 
 ## Tray Controls
 

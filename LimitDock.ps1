@@ -2656,11 +2656,8 @@ function New-ProviderCardControl {
       try { $winShort = Format-QuotaWindowLabel $segment.Window } catch { $winShort = "" }
       [string]$resetShort = ""
       try { $resetShort = ([string]$segment.Reset).Trim() } catch { $resetShort = "" }
-      $metaParts = @()
-      if (-not [string]::IsNullOrWhiteSpace($winShort)) { $metaParts += $winShort }
-      if (-not [string]::IsNullOrWhiteSpace($resetShort)) { $metaParts += $resetShort }
-      [string]$metaText = ($metaParts -join " ")
-      foreach ($tail in @($metaText, $resetShort, $winShort)) {
+      [string]$metaText = $resetShort
+      foreach ($tail in @($resetShort)) {
         if (-not [string]::IsNullOrWhiteSpace($tail)) {
           $capText = ([regex]::Replace($capText, "\s+" + [regex]::Escape($tail) + "$", "")).Trim()
         }

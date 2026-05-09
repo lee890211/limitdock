@@ -8,7 +8,7 @@ LimitDock is not a replacement for OpenUsage.sh. Provider discovery, telemetry, 
 
 ## What It Shows
 
-- Remaining quota only, grouped by provider, model or plan bucket, metering window, reset countdown, and percent.
+- Remaining quota only, grouped by provider, model or plan bucket, reset countdown, and percent.
 - Codex rate-limit rows, including Spark labels exposed by OpenUsage attributes.
 - Cursor plan-cycle quota from `plan_percent_used` with `billing_cycle_end` reset text.
 - Gemini model-specific quota rows, while suppressing aggregate duplicates when precise model rows exist.
@@ -20,7 +20,7 @@ LimitDock intentionally does not show spend, token totals, request counts, tool-
 
 ### Ribbon Mode
 
-Use `bottom` or `top` for a horizontal ribbon. Each provider card shows one or more quota rows. When two rows are visible, they use two full-width lines; three or four rows use a compact grid. Long model names are shortened before reset time or remaining percent disappear.
+Use `bottom` or `top` for a horizontal ribbon. Each provider card shows one or more quota rows. Row labels keep the model or plan bucket, including the metering window when OpenUsage exposes it; the timing column shows only the reset countdown. When two rows are visible, they use two full-width lines; three or four rows use a compact grid. Long labels are shortened before reset time or remaining percent disappear.
 
 ![LimitDock top or bottom ribbon](docs/images/manual-ribbon.png)
 
