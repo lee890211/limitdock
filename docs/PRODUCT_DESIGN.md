@@ -13,7 +13,7 @@ LimitDock is a working status bar, not a dashboard. Its purpose is to keep quota
 
 Top and bottom edges use a compact ribbon around 80 to 84 pixels tall. Provider cards are fixed-size chips, and quota rows are capped to a 2 by 2 grid per card. Extra rows remain available through the double-click row picker.
 
-Left and right edges use a vertical strip. Cards stack vertically, and quota rows use one full-width row per model/window so side docking reads top to bottom instead of as a compressed grid.
+Left and right edges use a narrow vertical strip. Cards stack vertically, and quota rows use one full-width row per model/window. Model labels are deliberately truncated before reset and percent are allowed to disappear.
 
 ## Tool Rail
 

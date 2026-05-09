@@ -19,7 +19,6 @@ LimitDock-<version>/
   NOTES.md
   settings.example.json
   assets/icons/*.png
-  docs/
   engine/bin/openusage-readmodel.exe
   engine/downloads/
   engine/state/
@@ -27,7 +26,7 @@ LimitDock-<version>/
 
 Do not ship `settings.json`, databases, WAL files, PID files, logs, Go caches, OpenUsage.sh source, or personal runtime downloads. LimitDock fetches the official OpenUsage.sh Windows release when the runtime binary is missing.
 
-Publish the complete `LimitDock-<version>` folder as a zip. Do not publish `LimitDock.exe` alone: the EXE expects `engine/bin/openusage-readmodel.exe`, `assets/icons`, docs, and runtime directories beside it.
+Publish the complete `LimitDock-<version>` folder as a zip. Do not publish `LimitDock.exe` alone: the EXE expects `engine/bin/openusage-readmodel.exe`, `assets/icons`, launch scripts, and runtime directories beside it. The full Markdown docs stay in the repository and are not copied into the default release folder.
 
 ## Build And Test
 

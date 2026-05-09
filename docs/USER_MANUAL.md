@@ -42,7 +42,7 @@ Choose a dock edge:
 - `right`
 
 Use Settings to change the selected edge. The selected edge is saved.
-Left and right docking stack provider cards vertically. Quota rows render one per line for easier side reading.
+Left and right docking stack provider cards vertically. Quota rows render one per line, with model names shortened before reset time or remaining percent are hidden.
 
 ![Settings](images/manual-settings.png)
 

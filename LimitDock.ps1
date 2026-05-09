@@ -2446,7 +2446,7 @@ function New-ProviderCardControl {
     $chipH = 52
   }
   if ($sideDock) {
-    $chipW = [Math]::Max(360, [Math]::Min([int]$script:DockCardChipWidth, ([int]$script:DockSideWidth - 22)))
+    $chipW = [Math]::Max(310, [Math]::Min([int]$script:DockCardChipWidth, ([int]$script:DockSideWidth - 20)))
     $chipH = 116
   }
   [int]$gaugeCapRibbon = [int]$script:DockRibbonGaugeCap
@@ -2661,11 +2661,17 @@ function New-ProviderCardControl {
       [int]$cellLeft = $rbCol * ($cellW + $cellGap)
       [int]$capW = [Math]::Max(56, [Math]::Min(96, ($cellW - 86)))
       [int]$pctW = 38
+      [int]$metaW = 0
       if ($sideDock) {
-        $capW = [Math]::Max(150, [Math]::Min(220, ($cellW - 150)))
         $pctW = 42
+        $metaW = 82
+        $capW = [Math]::Max(76, [Math]::Min(118, ($cellW - $metaW - $pctW - 54)))
       }
-      [int]$pctLeft = $cellLeft + $capW + 2
+      [int]$metaLeft = $cellLeft + $capW + 2
+      [int]$pctLeft = $metaLeft + $metaW + 2
+      if (-not $sideDock) {
+        $pctLeft = $cellLeft + $capW + 2
+      }
       [int]$gaugeLeft = $pctLeft + $pctW + 6
       [int]$gaugeW = [Math]::Max(34, ($cellLeft + $cellW - $gaugeLeft - 2))
 
@@ -2680,12 +2686,48 @@ function New-ProviderCardControl {
       $cap.ForeColor = $script:Theme.MutedFore
       $cap.BackColor = $container.BackColor
       $cap.AutoEllipsis = $true
-      $cap.Text = Convert-ToDisplayText $segment.Caption
+      [string]$capText = [string]$segment.Caption
+      [string]$metaText = ""
+      if ($sideDock) {
+        [string]$winShort = ""
+        try { $winShort = Format-QuotaWindowLabel $segment.Window } catch { $winShort = "" }
+        [string]$resetShort = ""
+        try { $resetShort = ([string]$segment.Reset).Trim() } catch { $resetShort = "" }
+        $metaParts = @()
+        if (-not [string]::IsNullOrWhiteSpace($winShort)) { $metaParts += $winShort }
+        if (-not [string]::IsNullOrWhiteSpace($resetShort)) { $metaParts += $resetShort }
+        $metaText = ($metaParts -join " ")
+        foreach ($tail in @($metaText, $resetShort, $winShort)) {
+          if (-not [string]::IsNullOrWhiteSpace($tail)) {
+            $capText = ([regex]::Replace($capText, "\s+" + [regex]::Escape($tail) + "$", "")).Trim()
+          }
+        }
+      }
+      $cap.Text = Convert-ToDisplayText $capText
       $cap.Tag = $Card
       $cap.Add_Click($clickHandler)
       $cap.Add_DoubleClick($doubleClickHandler)
 
       [void]$row.Controls.Add($cap)
+
+      if ($sideDock) {
+        $meta = New-Object System.Windows.Forms.Label
+        $meta.AutoSize = $false
+        $meta.Left = $metaLeft
+        $meta.Top = 0
+        $meta.Width = $metaW
+        $meta.Height = 18
+        $meta.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+        $meta.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Regular)
+        $meta.ForeColor = $script:Theme.MutedFore
+        $meta.BackColor = $container.BackColor
+        $meta.AutoEllipsis = $true
+        $meta.Text = Convert-ToDisplayText $metaText
+        $meta.Tag = $Card
+        $meta.Add_Click($clickHandler)
+        $meta.Add_DoubleClick($doubleClickHandler)
+        [void]$row.Controls.Add($meta)
+      }
 
       if ($null -ne $segment.Percent) {
         try {
@@ -2889,7 +2931,7 @@ function New-ToolRail {
   [bool]$sideDock = Test-DockEdgeIsSide $script:DockEdge
   if ($sideDock) {
     $rail.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
-    $rail.Width = [int]$script:DockCardChipWidth
+    $rail.Width = [Math]::Max(310, [Math]::Min([int]$script:DockCardChipWidth, ([int]$script:DockSideWidth - 20)))
     $rail.Height = 34
     $rail.Padding = New-Object System.Windows.Forms.Padding(5, 3, 5, 3)
   } else {
@@ -3144,7 +3186,7 @@ $form.BackColor = $script:Theme.Bar
 $form.ForeColor = $script:Theme.Fore
 $form.Height = 84
 [int]$script:DockHorizontalHeight = 84
-[int]$script:DockSideWidth = 456
+[int]$script:DockSideWidth = 350
 [int]$script:DockCardChipWidth = 420
 [int]$script:DockCardChipHeight = 70
 [int]$script:DockRibbonGaugeCap = 4
