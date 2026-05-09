@@ -32,7 +32,7 @@ Right-click the tray icon:
 Open `Settings`, then choose:
 
 - `overlay`: floats above other windows. The pin icon appears in the tool rail.
-- `reserved`: reserves a Windows work area. The three-dot handle appears in the tool rail.
+- `reserved`: reserves a Windows work area.
 
 Choose a dock edge:
 
@@ -41,7 +41,8 @@ Choose a dock edge:
 - `left`
 - `right`
 
-In reserved mode, drag the three-dot handle and release near a screen edge to snap there. The selected edge is saved.
+Use Settings to change the selected edge. The selected edge is saved.
+Left and right docking stack provider cards vertically. Quota rows render one per line for easier side reading.
 
 ![Settings](images/manual-settings.png)
 

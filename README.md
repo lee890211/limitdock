@@ -29,7 +29,7 @@ LimitDock supports two display modes:
 - `overlay`: floats above other windows. The pin icon is visible only in this mode.
 - `reserved`: registers a Windows appbar area and applies a matching work area so maximized windows leave room for the bar.
 
-The dock edge can be `bottom`, `top`, `left`, or `right`. In reserved mode, use the three-dot handle in the tool rail to snap the bar to the nearest screen edge. Settings are persisted in local `settings.json`.
+The dock edge can be `bottom`, `top`, `left`, or `right`. Change the edge from Settings. Settings are persisted in local `settings.json`.
 
 ## Quota Rows
 

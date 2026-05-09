@@ -13,16 +13,16 @@ LimitDock is a working status bar, not a dashboard. Its purpose is to keep quota
 
 Top and bottom edges use a compact ribbon around 80 to 84 pixels tall. Provider cards are fixed-size chips, and quota rows are capped to a 2 by 2 grid per card. Extra rows remain available through the double-click row picker.
 
-Left and right edges use a vertical strip. Cards stack vertically but keep the same internal row rules so provider behavior remains familiar across edges.
+Left and right edges use a vertical strip. Cards stack vertically, and quota rows use one full-width row per model/window so side docking reads top to bottom instead of as a compressed grid.
 
 ## Tool Rail
 
-The tool rail stays at the left edge of the ribbon/card stack:
+The tool rail stays compact:
 
-- Reserved mode: drag handle, settings.
+- Reserved mode: settings.
 - Overlay mode: settings, pin/unpin.
 
-The pin/unpin icon appears only in overlay mode because reserved mode is always fixed. The three-dot handle appears only in reserved mode because it changes the registered appbar edge.
+The pin/unpin icon appears only in overlay mode because reserved mode is always fixed. Dock edge changes live in Settings so the reserved appbar is predictable.
 
 ## Overlay Versus Reserved
 

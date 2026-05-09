@@ -2435,6 +2435,7 @@ function New-ProviderCardControl {
 
   $level = "ok"
   if ($Card.Level) { $level = [string]$Card.Level }
+  [bool]$sideDock = Test-DockEdgeIsSide $script:DockEdge
 
   [int]$chipW = [int]$script:DockCardChipWidth
   if ($chipW -lt 340) {
@@ -2443,6 +2444,10 @@ function New-ProviderCardControl {
   [int]$chipH = [int]$script:DockCardChipHeight
   if ($chipH -lt 52) {
     $chipH = 52
+  }
+  if ($sideDock) {
+    $chipW = [Math]::Max(360, [Math]::Min([int]$script:DockCardChipWidth, ([int]$script:DockSideWidth - 22)))
+    $chipH = 116
   }
   [int]$gaugeCapRibbon = [int]$script:DockRibbonGaugeCap
   if ($gaugeCapRibbon -lt 1) {
@@ -2617,12 +2622,19 @@ function New-ProviderCardControl {
 
   [int]$ribbonBandCount = @( $ribbonBands ).Count
   [int]$ribbonCols = 1
-  if ($ribbonBandCount -gt 1) {
+  if ((-not $sideDock) -and ($ribbonBandCount -gt 1)) {
     $ribbonCols = 2
   }
   [int]$ribbonRows = 0
   if ($ribbonBandCount -gt 0) {
     $ribbonRows = [int][Math]::Ceiling([double]$ribbonBandCount / [double]$ribbonCols)
+  }
+  if ($sideDock) {
+    $chipH = [Math]::Max(76, (30 + ([Math]::Max(1, $ribbonRows) * 22)))
+    if ($showDetailLineRibbon) {
+      $chipH += 18
+    }
+    $container.Height = $chipH
   }
   [int]$cellGap = 6
   [int]$cellW = $innerW
@@ -2649,6 +2661,10 @@ function New-ProviderCardControl {
       [int]$cellLeft = $rbCol * ($cellW + $cellGap)
       [int]$capW = [Math]::Max(56, [Math]::Min(96, ($cellW - 86)))
       [int]$pctW = 38
+      if ($sideDock) {
+        $capW = [Math]::Max(150, [Math]::Min(220, ($cellW - 150)))
+        $pctW = 42
+      }
       [int]$pctLeft = $cellLeft + $capW + 2
       [int]$gaugeLeft = $pctLeft + $pctW + 6
       [int]$gaugeW = [Math]::Max(34, ($cellLeft + $cellW - $gaugeLeft - 2))
@@ -2868,125 +2884,28 @@ function New-SettingsButton {
   return $wrap
 }
 
-function New-DragHandleBitmap {
-  $bitmap = New-Object System.Drawing.Bitmap 18, 18
-  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-  $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-  $graphics.Clear([System.Drawing.Color]::Transparent)
-  $brush = New-Object System.Drawing.SolidBrush $script:Theme.MutedFore
-  foreach ($y in @(4, 9, 14)) {
-    $graphics.FillEllipse($brush, 7, $y, 4, 4)
-  }
-  $brush.Dispose()
-  $graphics.Dispose()
-  return $bitmap
-}
-
-function New-DockDragHandleButton {
-  $wrap = New-Object System.Windows.Forms.Panel
-  $wrap.AutoSize = $false
-  $wrap.Width = 28
-  $wrap.Height = 28
-  $wrap.Margin = New-Object System.Windows.Forms.Padding(1, 1, 1, 1)
-  $wrap.Cursor = [System.Windows.Forms.Cursors]::SizeAll
-  Set-CardLabelStyle $wrap "status"
-
-  $dots = New-Object System.Windows.Forms.PictureBox
-  $dots.Width = 18
-  $dots.Height = 18
-  $dots.Left = 5
-  $dots.Top = 5
-  $dots.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
-  $dots.Cursor = [System.Windows.Forms.Cursors]::SizeAll
-  $dots.Image = New-DragHandleBitmap
-
-  $onDown = {
-    param($sender, $args)
-    try {
-      if ($args.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-        $script:DockDragActive = $true
-        $pt = [System.Windows.Forms.Cursor]::Position
-        $script:DockDragOffset = New-Object System.Drawing.Point ([int]($pt.X - $form.Left)), ([int]($pt.Y - $form.Top))
-        try { ([System.Windows.Forms.Control]$sender).Capture = $true } catch {}
-        try { $wrap.Capture = $true } catch {}
-        try { $dots.Capture = $true } catch {}
-        if ((Normalize-DockMode $script:DockMode) -eq "reserved") {
-          Unregister-LimitDockAppBar
-        }
-        $form.TopMost = $true
-      }
-    } catch {}
-  }
-  $onMove = {
-    param($sender, $args)
-    try {
-      if (-not [bool]$script:DockDragActive) {
-        return
-      }
-      $pt = [System.Windows.Forms.Cursor]::Position
-      $off = $script:DockDragOffset
-      if ($null -eq $off) {
-        $off = New-Object System.Drawing.Point 0, 0
-      }
-      [int]$left = [int]($pt.X - [int]$off.X)
-      [int]$top = [int]($pt.Y - [int]$off.Y)
-      $form.SetBounds($left, $top, $form.Width, $form.Height)
-      try {
-        [void][LimitDockNative]::SetWindowPos($form.Handle, [intptr](-1), $left, $top, $form.Width, $form.Height, 0x0040)
-      } catch {}
-    } catch {
-      Write-Log "Dock drag move failed: $($_.Exception.Message)"
-    }
-  }
-  $onUp = {
-    param($sender, $args)
-    try {
-      if (-not [bool]$script:DockDragActive) {
-        return
-      }
-      $script:DockDragActive = $false
-      $script:DockDragOffset = $null
-      try { ([System.Windows.Forms.Control]$sender).Capture = $false } catch {}
-      try { $wrap.Capture = $false } catch {}
-      try { $dots.Capture = $false } catch {}
-      $edge = Get-NearestDockEdgeFromPoint ([System.Windows.Forms.Cursor]::Position)
-      if ($edge) {
-        Set-DockEdgeAndApply $edge
-      }
-    } catch {
-      Write-Log "Dock snap failed: $($_.Exception.Message)"
-    }
-  }
-  $wrap.Add_MouseDown($onDown)
-  $wrap.Add_MouseMove($onMove)
-  $wrap.Add_MouseUp($onUp)
-  $dots.Add_MouseDown($onDown)
-  $dots.Add_MouseMove($onMove)
-  $dots.Add_MouseUp($onUp)
-
-  $wrap.Controls.Add($dots) | Out-Null
-  return $wrap
-}
-
 function New-ToolRail {
   $rail = New-Object System.Windows.Forms.FlowLayoutPanel
   $rail.AutoSize = $false
-  $rail.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
+  [bool]$sideDock = Test-DockEdgeIsSide $script:DockEdge
+  if ($sideDock) {
+    $rail.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+    $rail.Width = [int]$script:DockCardChipWidth
+    $rail.Height = 34
+    $rail.Padding = New-Object System.Windows.Forms.Padding(5, 3, 5, 3)
+  } else {
+    $rail.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
+    $rail.Width = 32
+    $rail.Height = [int]$script:DockCardChipHeight
+    $rail.Padding = New-Object System.Windows.Forms.Padding(1, 4, 1, 2)
+  }
   $rail.WrapContents = $false
-  $rail.Width = 32
-  $rail.Height = [int]$script:DockCardChipHeight
   $rail.Margin = New-Object System.Windows.Forms.Padding(2, 1, 3, 1)
-  $rail.Padding = New-Object System.Windows.Forms.Padding(1, 4, 1, 2)
   Set-CardLabelStyle $rail "status"
 
   $pinBtn = $null
-  $dragBtn = $null
   $settingsBtn = New-SettingsButton {
     try { Show-SettingsDialog } catch { Write-Log "Settings open failed: $($_.Exception.Message)" }
-  }
-  if ((Normalize-DockMode $script:DockMode) -eq "reserved") {
-    $dragBtn = New-DockDragHandleButton
-    [void]$rail.Controls.Add($dragBtn)
   }
   [void]$rail.Controls.Add($settingsBtn)
   if ((Normalize-DockMode $script:DockMode) -eq "overlay") {
@@ -2995,12 +2914,27 @@ function New-ToolRail {
     }
     [void]$rail.Controls.Add($pinBtn)
   }
+  if ($sideDock) {
+    $sideStatus = New-Object System.Windows.Forms.Label
+    $sideStatus.AutoSize = $false
+    $sideStatus.Width = [Math]::Max(120, ([int]$rail.Width - (34 * $rail.Controls.Count) - 18))
+    $sideStatus.Height = 24
+    $sideStatus.Margin = New-Object System.Windows.Forms.Padding(8, 2, 0, 0)
+    $sideStatus.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Regular)
+    $sideStatus.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+    $sideStatus.ForeColor = $script:Theme.StatusAccent
+    $sideStatus.BackColor = $rail.BackColor
+    $sideStatus.Text = "Updated --:--:--"
+    $script:SideStatusLabel = $sideStatus
+    [void]$rail.Controls.Add($sideStatus)
+  } else {
+    $script:SideStatusLabel = $null
+  }
 
   try {
     if (-not ($script:LdRibbonToolTip -is [System.Windows.Forms.ToolTip])) {
       $script:LdRibbonToolTip = New-Object System.Windows.Forms.ToolTip
     }
-    if ($dragBtn) { $script:LdRibbonToolTip.SetToolTip($dragBtn, "Drag to dock edge") }
     $script:LdRibbonToolTip.SetToolTip($settingsBtn, "Settings")
     if ($pinBtn) { $script:LdRibbonToolTip.SetToolTip($pinBtn, (Get-AutoHidePinLabelText)) }
   } catch {}
@@ -3367,38 +3301,6 @@ function Move-LimitDockToDockState {
     $top = $script:HideTop
   }
   Set-LimitDockWindowBounds $left $top $form.Width $form.Height
-}
-
-function Get-NearestDockEdgeFromPoint {
-  param([System.Drawing.Point]$Point)
-  Update-LimitDockScreenMetrics
-  $candidates = @(
-    @{ Edge = "left"; Distance = [Math]::Abs([int]$Point.X - [int]$script:Bounds.Left) },
-    @{ Edge = "right"; Distance = [Math]::Abs([int]$script:Bounds.Right - [int]$Point.X) },
-    @{ Edge = "top"; Distance = [Math]::Abs([int]$Point.Y - [int]$script:Bounds.Top) },
-    @{ Edge = "bottom"; Distance = [Math]::Abs([int]$script:Bounds.Bottom - [int]$Point.Y) }
-  )
-  return [string](@($candidates | Sort-Object Distance | Select-Object -First 1)[0].Edge)
-}
-
-function Set-DockEdgeAndApply {
-  param([AllowNull()][object]$Edge)
-  [string]$newEdge = Normalize-DockEdge $Edge
-  if ((Normalize-DockMode $script:DockMode) -eq "reserved") {
-    Unregister-LimitDockAppBar
-    try {
-      [System.Windows.Forms.Application]::DoEvents()
-      Start-Sleep -Milliseconds 120
-      [System.Windows.Forms.Application]::DoEvents()
-    } catch {}
-  }
-  $script:DockEdge = $newEdge
-  if ($script:Settings) {
-    $script:Settings.dockEdge = $newEdge
-    Save-LimitDockSettings $script:Settings
-  }
-  Apply-DockMode $script:DockMode
-  Render-Cards
 }
 
 function Set-LimitDockWindowBounds {
@@ -4498,6 +4400,10 @@ function Render-Cards {
     $statusLabel.Text = "Updated " + (Get-Date -Format "HH:mm:ss")
     Set-CardLabelStyle $statusLabel "status"
     $statusLabel.ForeColor = $script:Theme.StatusAccent
+    if ($script:SideStatusLabel -is [System.Windows.Forms.Label]) {
+      $script:SideStatusLabel.Text = "Updated " + (Get-Date -Format "HH:mm:ss")
+      $script:SideStatusLabel.ForeColor = $script:Theme.StatusAccent
+    }
     $tooltip = "LimitDock - " + (($cards | ForEach-Object { "$($_.Name) $($_.Main)" }) -join " | ")
     if ($tooltip.Length -gt 63) {
       $tooltip = $tooltip.Substring(0, 60) + "..."
