@@ -59,7 +59,6 @@ Antigravity:
 - `autoHide`
 - `hiddenQuotaBands`
 - refresh interval and gauge thresholds
-- Antigravity path hints
 
 `settings.example.json` documents portable defaults.
 

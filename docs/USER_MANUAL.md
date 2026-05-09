@@ -70,17 +70,9 @@ When Gemini model-specific rows exist, LimitDock shows those rows and suppresses
 
 Codex `rate_limit_codex_bengalfox_*` rows are kept. When OpenUsage provides `rate_limit_codex_bengalfox_name`, LimitDock uses that display label, currently `GPT-5.3-Codex-Spark`.
 
-## Antigravity Manual Setup
+## Antigravity
 
 LimitDock does not add custom Antigravity quota parsing. Antigravity quota appears only if OpenUsage exposes it as a provider or quota-like snapshot.
-
-Use Settings for manual hints:
-
-- `antigravity.binaryPath`: Antigravity executable path when it is not on `PATH`.
-- `antigravity.dataDir`: Antigravity or Gemini conversation/workspace root.
-- `antigravity.subtitle`: manual label, for example `Claude + Gemini`.
-
-If Antigravity still does not show quota, verify OpenUsage itself exposes Antigravity quota in its read model.
 
 ## EXE Launch
 

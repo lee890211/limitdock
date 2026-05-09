@@ -6,7 +6,9 @@ LimitDock is a compact Windows agent status dock powered by [OpenUsage.sh](https
 
 LimitDock is a desktop UI layer for OpenUsage.sh, not a separate quota parser. Provider discovery, telemetry collection, and quota snapshots come from the OpenUsage daemon; LimitDock supervises that daemon, reads `/v1/read-model`, and renders the quota-like rows in a compact Windows dock.
 
-On first run, LimitDock downloads the official Windows release from the [OpenUsage.sh repository](https://github.com/janekbaraniewski/openusage) when the binary is not already bundled.
+OpenUsage.sh is a terminal-oriented project with a macOS-first workflow. It can be used from Windows through the available shell/terminal path, but that is not an ideal fit for an always-visible Windows desktop status dock. LimitDock exists to make the same OpenUsage telemetry feel native enough for a Windows agent bar.
+
+On first run, LimitDock downloads the Windows binary release from the [OpenUsage.sh repository](https://github.com/janekbaraniewski/openusage) when the binary is not already bundled.
 
 ## Run
 
@@ -50,12 +52,6 @@ Spend, request, token, tool-call, and cost rows are not rendered. Exhausted or 0
 ## Antigravity
 
 LimitDock does not add custom Antigravity quota parsing. Antigravity quota appears only when OpenUsage exposes it as a provider or quota-like snapshot.
-
-Use Settings for manual environment hints:
-
-- `antigravity.binaryPath`: path to the Antigravity executable when it is not on `PATH`.
-- `antigravity.dataDir`: Antigravity or Gemini conversation/workspace root to probe.
-- `antigravity.subtitle`: a manual label such as `Claude + Gemini`.
 
 ## Checks And Packaging
 
