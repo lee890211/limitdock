@@ -16,6 +16,8 @@ LimitDock intentionally does not show spend, token totals, request counts, tool-
 
 LimitDock is built on [openusage](https://github.com/janekbaraniewski/openusage). It is not a replacement for openusage: provider discovery, telemetry, and the read model belong there. LimitDock supervises the openusage daemon, reads its local read-model endpoint, normalizes quota-like rows, and renders them as a native Windows dock. Many thanks to the openusage maintainers for building the local usage/quota foundation this project depends on.
 
+Provider support follows OpenUsage's upstream provider list where possible. See [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers not exposed by OpenUsage can be added in LimitDock through Go reader adapters that emit the same internal card model.
+
 ## User Guide
 
 ### Ribbon Mode
@@ -54,34 +56,26 @@ LimitDock supports two display modes:
 
 Edges are `bottom`, `top`, `left`, and `right`. You can change display mode and edge from `Settings`; docking choices are stored in local `settings.json`.
 
-`Start LimitDock when Windows starts` is also in `Settings`. It creates a per-user Startup shortcut to `launch-limitdock.vbs` when that launcher is available, so Windows can start the same extracted release folder after sign-in without administrator rights. Turn the checkbox off to remove the shortcut.
+`Start LimitDock when Windows starts` is also in `Settings`. It writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value.
 
 ## Install
 
 1. Download the latest `LimitDock-<version>.zip` from GitHub Releases.
-2. Extract the whole folder. Do not run `LimitDock.exe` by itself; it expects the icons, scripts, settings reference, and runtime folders beside it.
+2. Extract the whole folder. Do not run `LimitDock.exe` by itself; it expects the icons, settings reference, and runtime folders beside it.
 3. Run `LimitDock.exe`.
 
 On first run, LimitDock downloads the official openusage Windows binary when it is not bundled. A local `settings.json` is created next to the app. The release includes `settings.example.json` as the portable configuration reference; personal `settings.json` files are never committed or shipped.
-
-For script mode:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-limitdock.ps1
-```
-
-For a hidden script launch, double-click `launch-limitdock.vbs`.
 
 ## Build From Source
 
 Requirements:
 
-- Windows PowerShell
-- Go, for the native `LimitDock.exe`
+- Go, for the native `LimitDock.exe` and release tool
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Version vYYYYMMDD
+```text
+go test ./...
+go build -ldflags "-H windowsgui" -o engine\bin\LimitDock.exe .\cmd\limitdock
+go run .\cmd\limitdock-release -version vYYYYMMDD
 ```
 
 The build creates:
@@ -89,7 +83,7 @@ The build creates:
 - `dist\LimitDock-<version>\`
 - `dist\LimitDock-<version>.zip`
 
-The repository keeps `LimitDock.ps1` as a legacy fallback during the Go migration, but release builds ship the Go `LimitDock.exe` from `cmd/limitdock`.
+The runtime app is Go-only. Legacy script app and probe files were removed after the migration.
 
 ## Documentation
 

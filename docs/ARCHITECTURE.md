@@ -12,6 +12,8 @@ LimitDock is a Go native Windows shell around OpenUsage.sh. The main boundary is
 - native Windows status bar and tray icon
 - settings persistence
 
+The runtime app does not invoke external shell scripts. Startup registration, docking, tray behavior, OpenUsage process management, and work-area restore are implemented from Go.
+
 OpenUsage.sh owns provider discovery and telemetry. LimitDock does not parse vendor databases directly for quota.
 
 ## Read-Model Adapter
@@ -47,8 +49,8 @@ Cursor:
 
 Antigravity:
 
-- No custom aliasing or quota parser is added in this pass.
 - Antigravity appears as quota only if OpenUsage exposes it as a provider or quota-like snapshot.
+- Custom readers for providers outside OpenUsage should emit the same internal read/card shape as the OpenUsage adapter.
 
 ## Settings
 
@@ -63,13 +65,13 @@ Antigravity:
 
 `settings.example.json` documents portable defaults.
 
-The Windows startup option is implemented as a per-user `.lnk` in the user's Startup folder. The shortcut prefers `launch-limitdock.vbs`, then `LimitDock.exe`, then script mode. This keeps startup behavior local to the extracted folder and avoids machine-wide registry writes.
+The Windows startup option is implemented as a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Disabling startup removes that value and also cleans up the old `LimitDock.lnk` shortcut if it exists from a previous release.
 
 ## Appbar And DPI
 
 Reserved mode registers a shell appbar for the selected edge and also applies a Windows work area that matches the reserved bounds. This dual path is deliberate: appbar negotiation alone can be inconsistent under DPI scaling and shell edge changes.
 
-The appbar rectangle is passed to `SHAppBarMessage` in native screen pixels, while UI dimensions are kept in compact Windows logical units and clamped from the active monitor bounds. Hide and overlay transitions unregister the appbar and restore the captured work area.
+The appbar rectangle is passed to `SHAppBarMessage` in native screen pixels, while UI dimensions are kept in compact Windows logical units and clamped from the active monitor bounds. Hide and overlay transitions unregister the appbar and restore the captured work area. On exit, the app schedules a short delayed `LimitDock.exe --restore-workarea` helper run so Windows shell appbar teardown cannot leave stale reserved space behind.
 
 ## Rendering Loop
 

@@ -6,14 +6,14 @@ LimitDock is a Windows dock for quota rows produced from the OpenUsage.sh read m
 
 From a release folder, run:
 
-```powershell
+```text
 .\LimitDock.exe
 ```
 
 From the repository, run:
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\run-limitdock.ps1
+```text
+go run .\cmd\limitdock
 ```
 
 LimitDock starts the bundled or downloaded OpenUsage.sh daemon, reads the local read model, and renders provider cards that expose quota-like rows.
@@ -75,7 +75,7 @@ Dock edges:
 
 Dock mode, dock edge, auto-hide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time.
 
-`Start LimitDock when Windows starts` creates a shortcut in the current user's Windows Startup folder. It points to `launch-limitdock.vbs` when that launcher exists, so release builds start quietly from the extracted folder after sign-in. Clear the checkbox to remove the shortcut.
+`Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Clear the checkbox to remove the value. Older `LimitDock.lnk` startup shortcuts are cleaned up when this setting changes.
 
 ## Provider Behavior
 
@@ -99,11 +99,13 @@ Antigravity:
 - Appears as quota only when OpenUsage exposes it as a provider or quota-like snapshot.
 - Manual path hints can be set in Settings through `antigravity.binaryPath`, `antigravity.dataDir`, and `antigravity.subtitle`.
 
+For the upstream provider list, see [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers outside OpenUsage should be added through a LimitDock reader that emits the same normalized card rows.
+
 ## Build And Release
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Version vYYYYMMDD
+```text
+go test ./...
+go run .\cmd\limitdock-release -version vYYYYMMDD
 ```
 
 Publish the generated zip from `dist\`. Do not publish `LimitDock.exe` alone.

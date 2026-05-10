@@ -81,7 +81,7 @@ func Ensure(p Paths) error {
 }
 
 func looksLikeAppRoot(dir string) bool {
-	for _, name := range []string{"settings.example.json", "LimitDock.ps1"} {
+	for _, name := range []string{"settings.example.json", "go.mod"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return true
 		}

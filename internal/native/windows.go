@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 type Rect struct {
@@ -200,47 +201,65 @@ func StartupShortcutPath() string {
 }
 
 func StartupLaunchPath(root string) string {
-	for _, name := range []string{"launch-limitdock.vbs", "LimitDock.exe", "LimitDock.ps1"} {
-		path := filepath.Join(root, name)
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
 	return filepath.Join(root, "LimitDock.exe")
 }
 
 func StartupEnabled() bool {
-	_, err := os.Stat(StartupShortcutPath())
+	key, err := registry.OpenKey(registry.CURRENT_USER, startupRunKey, registry.QUERY_VALUE)
+	if err == nil {
+		defer key.Close()
+		if value, _, err := key.GetStringValue(startupRunName); err == nil && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	_, err = os.Stat(StartupShortcutPath())
 	return err == nil
 }
 
 func SetStartupEnabled(root string, enabled bool) error {
-	shortcut := StartupShortcutPath()
 	if !enabled {
-		if err := os.Remove(shortcut); err != nil && !os.IsNotExist(err) {
+		if err := deleteStartupRunValue(); err != nil {
 			return err
 		}
-		return nil
+		return removeLegacyStartupShortcut()
 	}
 	target := StartupLaunchPath(root)
-	if err := os.MkdirAll(filepath.Dir(shortcut), 0o755); err != nil {
-		return err
-	}
-	script := fmt.Sprintf(
-		`$w = New-Object -ComObject WScript.Shell; $s = $w.CreateShortcut(%s); $s.TargetPath = %s; $s.WorkingDirectory = %s; $s.IconLocation = %s; $s.Save()`,
-		psQuote(shortcut), psQuote(target), psQuote(root), psQuote(target),
-	)
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.CombinedOutput()
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, startupRunKey, registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("create startup shortcut: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("open startup run key: %w", err)
+	}
+	defer key.Close()
+	if err := key.SetStringValue(startupRunName, quoteCommand(target)); err != nil {
+		return fmt.Errorf("set startup run value: %w", err)
+	}
+	return removeLegacyStartupShortcut()
+}
+
+func deleteStartupRunValue() error {
+	key, err := registry.OpenKey(registry.CURRENT_USER, startupRunKey, registry.SET_VALUE)
+	if err != nil {
+		if err == windows.ERROR_FILE_NOT_FOUND {
+			return nil
+		}
+		return fmt.Errorf("open startup run key: %w", err)
+	}
+	defer key.Close()
+	if err := key.DeleteValue(startupRunName); err != nil && err != windows.ERROR_FILE_NOT_FOUND {
+		return fmt.Errorf("delete startup run value: %w", err)
 	}
 	return nil
 }
 
-func psQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+func removeLegacyStartupShortcut() error {
+	shortcut := StartupShortcutPath()
+	if err := os.Remove(shortcut); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func quoteCommand(path string) string {
+	return `"` + strings.ReplaceAll(path, `"`, `\"`) + `"`
 }
 
 func appBarEdge(edge string) uint32 {
@@ -322,4 +341,6 @@ const (
 	abeBottom = 3
 
 	appbarCallback = 0x8001
+	startupRunKey  = `Software\Microsoft\Windows\CurrentVersion\Run`
+	startupRunName = "LimitDock"
 )

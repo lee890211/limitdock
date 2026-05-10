@@ -23,5 +23,5 @@ Current product rules:
 Release shape:
 
 - Publish `dist/LimitDock-<version>.zip`.
-- Include `LimitDock.exe`, launch scripts, icons, README screenshot assets, and `settings.example.json`.
+- Include `LimitDock.exe`, icons, README screenshot assets, and `settings.example.json`.
 - Do not include personal settings, runtime databases, logs, PID files, Go caches, or downloaded OpenUsage binaries unless intentionally making an offline release.
