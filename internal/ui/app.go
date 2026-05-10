@@ -32,9 +32,10 @@ type App struct {
 	log     *logging.Logger
 	manager *openusage.Manager
 
-	mw      *walk.MainWindow
-	surface *walk.CustomWidget
-	notify  *walk.NotifyIcon
+	mw          *walk.MainWindow
+	surface     *walk.CustomWidget
+	statusLabel *walk.Label
+	notify      *walk.NotifyIcon
 
 	fontSmall *walk.Font
 	fontText  *walk.Font
@@ -138,7 +139,7 @@ func (a *App) createWindow() error {
 	}
 	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
 		a.cancel()
-		a.unregisterAppBar()
+		a.removeAppBarRegistration()
 		if a.notify != nil {
 			_ = a.notify.SetVisible(false)
 		}
@@ -158,6 +159,20 @@ func (a *App) createWindow() error {
 	_ = a.surface.SetAlwaysConsumeSpace(true)
 	a.surface.MouseDown().Attach(a.handleMouseDown)
 	_ = layout.SetStretchFactor(a.surface, 1)
+
+	a.statusLabel, err = walk.NewLabel(a.mw)
+	if err != nil {
+		return err
+	}
+	_ = a.statusLabel.SetText(ribbonStatusText(a.status))
+	a.statusLabel.SetFont(a.fontBold)
+	a.statusLabel.SetTextColor(themeAccent)
+	_ = a.statusLabel.SetTextAlignment(walk.AlignCenter)
+	_ = a.statusLabel.SetEllipsisMode(walk.EllipsisEnd)
+	_ = a.statusLabel.SetMinMaxSizePixels(walk.Size{Width: 158}, walk.Size{Width: 158})
+	if bg, err := walk.NewSolidColorBrush(themeStatusBack); err == nil {
+		a.statusLabel.SetBackground(bg)
+	}
 
 	a.applyDock()
 	if !(a.cfg.DockMode == "overlay" && a.cfg.AutoHide && isSide(a.cfg.DockEdge)) {
@@ -261,41 +276,157 @@ func (a *App) paint(canvas *walk.Canvas, update walk.Rectangle) error {
 	if side {
 		a.paintSide(canvas, bounds, cards, status)
 	} else {
-		a.paintRibbon(canvas, bounds, cards, status)
+		a.paintRibbon(canvas, bounds, cards)
 	}
 	return nil
 }
 
-func (a *App) paintRibbon(canvas *walk.Canvas, bounds walk.Rectangle, cards []quota.Card, status string) {
-	pad := 8
-	rail := walk.Rectangle{X: pad, Y: pad, Width: 58, Height: bounds.Height - pad*2}
-	a.paintRail(canvas, rail, false)
+func (a *App) paintRibbon(canvas *walk.Canvas, bounds walk.Rectangle, cards []quota.Card) {
+	padX := 8
+	padTop := 6
+	cardH := min(82, max(52, bounds.Height-11))
+	rail := walk.Rectangle{X: padX, Y: padTop, Width: 32, Height: cardH}
+	a.paintRibbonRail(canvas, rail)
 
-	statusW := 132
-	statusRect := walk.Rectangle{X: bounds.Width - statusW - pad, Y: pad, Width: statusW, Height: bounds.Height - pad*2}
-	a.paintStatus(canvas, statusRect, status)
-
-	x := rail.Right() + 8
-	right := statusRect.X - 8
-	cardH := bounds.Height - pad*2
+	x := rail.Right() + 6
+	right := bounds.Width - 4
 	if len(cards) == 0 {
-		a.paintWaiting(canvas, walk.Rectangle{X: x, Y: pad, Width: max(210, right-x), Height: cardH})
+		a.paintRibbonWaiting(canvas, walk.Rectangle{X: x, Y: padTop, Width: max(340, right-x), Height: cardH})
 		return
 	}
 	gap := 6
-	cardW := 242
-	if len(cards) > 0 {
-		avail := right - x - gap*(len(cards)-1)
-		cardW = max(210, min(330, avail/len(cards)))
-	}
+	cardW := 500
 	for _, card := range cards {
 		if x+cardW > right {
 			break
 		}
-		rect := walk.Rectangle{X: x, Y: pad, Width: cardW, Height: cardH}
-		a.paintCard(canvas, rect, card, false)
+		rect := walk.Rectangle{X: x, Y: padTop, Width: cardW, Height: cardH}
+		a.paintRibbonCard(canvas, rect, card)
 		a.cardHits = append(a.cardHits, cardHit{rect: rect, card: card})
 		x += cardW + gap
+	}
+}
+
+func (a *App) paintRibbonRail(canvas *walk.Canvas, rect walk.Rectangle) {
+	bg := brush(themeStatusBack)
+	defer bg.Dispose()
+	canvas.FillRectanglePixels(bg, rect)
+	a.gearHit = walk.Rectangle{X: rect.X + 2, Y: rect.Y + 4, Width: 28, Height: 28}
+	a.pinHit = walk.Rectangle{X: rect.X + 2, Y: rect.Y + 36, Width: 28, Height: 28}
+	a.paintRibbonTool(canvas, a.gearHit, "\u2699", themeMuted)
+	if a.cfg.DockMode == "overlay" {
+		if a.cfg.AutoHide {
+			a.paintRibbonTool(canvas, a.pinHit, "\U0001F50C", themeFore)
+		} else {
+			a.paintRibbonTool(canvas, a.pinHit, "\U0001F4CC", themeAccent)
+		}
+	} else {
+		a.pinHit = walk.Rectangle{}
+	}
+}
+
+func (a *App) paintRibbonTool(canvas *walk.Canvas, rect walk.Rectangle, text string, color walk.Color) {
+	canvas.DrawTextPixels(text, a.fontIcon, color, rect, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine)
+}
+
+func (a *App) paintRibbonWaiting(canvas *walk.Canvas, rect walk.Rectangle) {
+	bg := brush(themeStatusBack)
+	defer bg.Dispose()
+	canvas.FillRectanglePixels(bg, rect)
+	canvas.DrawTextPixels("LimitDock waiting for OpenUsage", a.fontBold, themeFore, inset(rect, 10, 6), walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextEndEllipsis)
+	canvas.DrawTextPixels("Quota rows appear after telemetry refresh", a.fontSmall, themeMuted, walk.Rectangle{X: rect.X + 10, Y: rect.Y + 30, Width: rect.Width - 20, Height: 20}, walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextEndEllipsis)
+}
+
+func (a *App) paintRibbonCard(canvas *walk.Canvas, rect walk.Rectangle, card quota.Card) {
+	bg := brush(levelColor(card.Level))
+	defer bg.Dispose()
+	canvas.FillRectanglePixels(bg, rect)
+
+	a.paintProviderIcon(canvas, card.Name, walk.Rectangle{X: rect.X + 6, Y: rect.Y + 8, Width: 20, Height: 20})
+
+	fore := levelForeColor(card.Level)
+	stackX := rect.X + 36
+	stackY := rect.Y + 3
+	innerW := max(268, rect.Width-48)
+	title := card.Name
+	if countMeteredBands(card.Bands) == 0 && strings.TrimSpace(card.Main) != "" {
+		title = strings.TrimSpace(card.Name + " " + card.Main)
+	}
+	canvas.DrawTextPixels(title, a.fontBold, fore, walk.Rectangle{X: stackX, Y: stackY, Width: innerW, Height: 18}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+
+	bands := card.Bands
+	if len(bands) > a.cfg.GaugeMaxBands {
+		bands = bands[:a.cfg.GaugeMaxBands]
+	}
+	ribbonCols := 1
+	if len(bands) > 2 {
+		ribbonCols = 2
+	}
+	ribbonRows := 0
+	if len(bands) > 0 {
+		ribbonRows = (len(bands) + ribbonCols - 1) / ribbonCols
+	}
+	cellGap := 6
+	cellW := innerW
+	if ribbonCols > 1 {
+		cellW = max(130, (innerW-cellGap)/2)
+	}
+
+	for row := 0; row < ribbonRows; row++ {
+		rowY := stackY + 23 + row*21
+		for col := 0; col < ribbonCols; col++ {
+			idx := row*ribbonCols + col
+			if idx >= len(bands) {
+				continue
+			}
+			band := bands[idx]
+			cellLeft := stackX + col*(cellW+cellGap)
+			a.paintRibbonBand(canvas, cellLeft, rowY, cellW, band, fore)
+		}
+	}
+}
+
+func (a *App) paintRibbonBand(canvas *walk.Canvas, cellLeft, rowY, cellW int, band quota.Band, fore walk.Color) {
+	capText := ribbonCaption(band)
+	metaText := strings.TrimSpace(band.Reset)
+	hasMeta := metaText != ""
+	pctW := 38
+	capW := max(56, min(96, cellW-86))
+	metaW := 0
+	showGauge := true
+	if hasMeta {
+		pctW = 36
+		if cellW < 220 {
+			showGauge = false
+			metaW = max(58, min(76, int(math.Floor(float64(cellW)*0.42))))
+			capW = max(46, min(88, cellW-metaW-pctW-6))
+		} else {
+			metaW = max(64, min(82, int(math.Floor(float64(cellW)*0.25))))
+			capW = max(70, min(140, cellW-metaW-pctW-48))
+		}
+	}
+	metaLeft := cellLeft + capW + 2
+	pctLeft := metaLeft + metaW + 2
+	if !hasMeta {
+		pctLeft = cellLeft + capW + 2
+	}
+	gaugeLeft := pctLeft + pctW + 6
+	gaugeW := 0
+	if showGauge {
+		gaugeW = max(28, cellLeft+cellW-gaugeLeft-2)
+	}
+
+	canvas.DrawTextPixels(capText, a.fontSmall, themeMuted, walk.Rectangle{X: cellLeft, Y: rowY, Width: capW, Height: 18}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+	if hasMeta {
+		canvas.DrawTextPixels(metaText, a.fontSmall, themeMuted, walk.Rectangle{X: metaLeft, Y: rowY, Width: metaW, Height: 18}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+	}
+	if band.Percent != nil {
+		canvas.DrawTextPixels(percentText(band.Percent), a.fontSmall, fore, walk.Rectangle{X: pctLeft, Y: rowY, Width: pctW, Height: 18}, walk.TextRight|walk.TextVCenter|walk.TextSingleLine)
+		if showGauge {
+			a.paintGaugeLight(canvas, walk.Rectangle{X: gaugeLeft, Y: rowY + 2, Width: gaugeW, Height: 13}, band.Percent)
+		}
+	} else if band.DisplayDetail != "" {
+		canvas.DrawTextPixels(band.DisplayDetail, a.fontSmall, fore, walk.Rectangle{X: pctLeft, Y: rowY, Width: max(44, cellLeft+cellW-pctLeft-2), Height: 17}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
 	}
 }
 
@@ -378,7 +509,7 @@ func (a *App) paintProviderIcon(canvas *walk.Canvas, name string, rect walk.Rect
 		bg := brush(themeCodexIcon)
 		defer bg.Dispose()
 		canvas.FillEllipsePixels(bg, rect)
-		canvas.DrawTextPixels("o", a.fontBold, themeIconFore, inset(rect, 2, 1), walk.TextCenter|walk.TextVCenter|walk.TextSingleLine)
+		canvas.DrawTextPixels("O", a.fontBold, themeIconFore, inset(rect, 2, 1), walk.TextCenter|walk.TextVCenter|walk.TextSingleLine)
 	case "gemini":
 		bg := brush(themeGeminiIcon)
 		defer bg.Dispose()
@@ -420,9 +551,20 @@ func (a *App) paintGaugeLight(canvas *walk.Canvas, rect walk.Rectangle, pct *flo
 	if w < 1 && *pct > 0 {
 		w = 1
 	}
-	fill := brush(themeGaugeFillLight)
+	fill := brush(a.gaugeFillColor(*pct))
 	defer fill.Dispose()
 	canvas.FillRectanglePixels(fill, walk.Rectangle{X: rect.X + 1, Y: rect.Y + 1, Width: w, Height: rect.Height - 2})
+}
+
+func (a *App) gaugeFillColor(remaining float64) walk.Color {
+	used := 100 - remaining
+	if used >= float64(a.cfg.GaugeCritPercent) {
+		return themeGaugeCrit
+	}
+	if used >= float64(a.cfg.GaugeWarnPercent) {
+		return themeGaugeWarn
+	}
+	return themeGaugeOk
 }
 
 func (a *App) paintRail(canvas *walk.Canvas, rect walk.Rectangle, horizontal bool) {
@@ -561,6 +703,7 @@ func (a *App) applyDock() {
 	}
 	a.unregisterAppBar()
 	native.SetPopupToolWindow(uintptr(a.mw.Handle()))
+	a.syncRibbonStatusLabel()
 	full := native.PrimaryBounds()
 	work, err := native.GetWorkArea()
 	if err != nil {
@@ -596,7 +739,11 @@ func (a *App) applyDock() {
 		case "right":
 			work.Right = rect.Left
 		}
-		_ = native.SetWorkArea(scaleRect(work, workScale))
+		if err := native.SetWorkArea(work); err != nil {
+			a.log.Printf("Reserved workarea apply failed: %v", err)
+		} else {
+			a.log.Printf("Reserved workarea applied edge=%s rect=(%d,%d,%d,%d) base=(%d,%d,%d,%d)", a.cfg.DockEdge, work.Left, work.Top, work.Right, work.Bottom, a.baseWork.Left, a.baseWork.Top, a.baseWork.Right, a.baseWork.Bottom)
+		}
 	} else if a.cfg.AutoHide && isSide(a.cfg.DockEdge) {
 		_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
 		a.mw.Hide()
@@ -613,20 +760,42 @@ func (a *App) applyDock() {
 	a.invalidate()
 }
 
-func (a *App) unregisterAppBar() {
+func (a *App) unregisterAppBar() (native.Rect, bool) {
+	a.removeAppBarRegistration()
+	if a.baseWork != nil {
+		base := *a.baseWork
+		if err := native.SetWorkArea(base); err != nil {
+			a.log.Printf("Reserved workarea restore failed: %v", err)
+		} else {
+			a.log.Printf("Reserved workarea restored rect=(%d,%d,%d,%d)", base.Left, base.Top, base.Right, base.Bottom)
+		}
+		a.baseWork = nil
+		a.workScale = 1
+		return base, true
+	}
+	return native.Rect{}, false
+}
+
+func (a *App) removeAppBarRegistration() {
 	if a.appbar && a.mw != nil && !a.mw.IsDisposed() {
 		native.RemoveAppBar(uintptr(a.mw.Handle()))
 		a.appbar = false
 	}
-	if a.baseWork != nil {
-		scale := a.workScale
-		if scale <= 0 {
-			scale = 1
-		}
-		_ = native.SetWorkArea(scaleRect(*a.baseWork, scale))
-		a.baseWork = nil
-		a.workScale = 1
+}
+
+func (a *App) syncRibbonStatusLabel() {
+	if a.statusLabel == nil || a.statusLabel.IsDisposed() {
+		return
 	}
+	visible := !isSide(a.cfg.DockEdge)
+	a.statusLabel.SetVisible(visible)
+	if !visible {
+		return
+	}
+	a.mu.Lock()
+	status := a.status
+	a.mu.Unlock()
+	_ = a.statusLabel.SetText(ribbonStatusText(status))
 }
 
 func (a *App) setStatusVisible(visible bool) {
@@ -839,7 +1008,11 @@ func (a *App) showSettingsDialog() {
 
 func (a *App) cleanup() {
 	a.cancel()
-	a.unregisterAppBar()
+	if base, ok := a.unregisterAppBar(); ok {
+		if err := native.ScheduleWorkAreaRestore(base); err != nil {
+			a.log.Printf("Reserved delayed workarea restore failed to start: %v", err)
+		}
+	}
 	if a.notify != nil {
 		_ = a.notify.SetVisible(false)
 		_ = a.notify.Dispose()
@@ -861,7 +1034,19 @@ func (a *App) setStatus(text string) {
 	a.mu.Lock()
 	a.status = text
 	a.mu.Unlock()
+	a.updateRibbonStatusLabel(text)
 	a.invalidate()
+}
+
+func (a *App) updateRibbonStatusLabel(text string) {
+	if a.mw == nil || a.mw.IsDisposed() || a.statusLabel == nil || a.statusLabel.IsDisposed() {
+		return
+	}
+	a.mw.Synchronize(func() {
+		if a.statusLabel != nil && !a.statusLabel.IsDisposed() && !isSide(a.cfg.DockEdge) {
+			_ = a.statusLabel.SetText(ribbonStatusText(text))
+		}
+	})
 }
 
 func (a *App) invalidate() {
@@ -945,7 +1130,7 @@ func addLabel(parent walk.Container, text string) {
 
 func dockRect(full native.Rect, work native.Rect, edge string, side bool, hidden bool) native.Rect {
 	width := int32(350)
-	height := int32(94)
+	height := int32(96)
 	if side {
 		height = work.Bottom - work.Top
 	} else {
@@ -1033,6 +1218,48 @@ func levelColor(level string) walk.Color {
 	}
 }
 
+func levelForeColor(level string) walk.Color {
+	switch level {
+	case "critical":
+		return themeCriticalFore
+	case "warn":
+		return themeWarnFore
+	case "status":
+		return themeMuted
+	default:
+		return themeFore
+	}
+}
+
+func countMeteredBands(bands []quota.Band) int {
+	n := 0
+	for _, band := range bands {
+		if band.Percent != nil {
+			n++
+		}
+	}
+	return n
+}
+
+func ribbonCaption(band quota.Band) string {
+	caption := strings.TrimSpace(band.Caption)
+	reset := strings.TrimSpace(band.Reset)
+	if reset != "" {
+		caption = strings.TrimSpace(strings.TrimSuffix(caption, " "+reset))
+	}
+	if caption == "" {
+		caption = strings.TrimSpace(band.Window)
+	}
+	return caption
+}
+
+func ribbonStatusText(status string) string {
+	if strings.TrimSpace(status) == "" {
+		return "Updated --:--:--"
+	}
+	return status
+}
+
 func inset(r walk.Rectangle, x, y int) walk.Rectangle {
 	return walk.Rectangle{X: r.X + x, Y: r.Y + y, Width: max(0, r.Width-x*2), Height: max(0, r.Height-y*2)}
 }
@@ -1076,29 +1303,32 @@ func isSide(edge string) bool {
 }
 
 var (
-	themeBar          = walk.RGB(24, 27, 31)
-	themePanel        = walk.RGB(35, 39, 45)
-	themeFore         = walk.RGB(242, 244, 247)
-	themeMuted        = walk.RGB(171, 181, 191)
-	themeAccent       = walk.RGB(126, 211, 194)
-	themeOkBack       = walk.RGB(34, 43, 44)
-	themeInfoBack     = walk.RGB(34, 40, 52)
-	themeStatusBack   = walk.RGB(43, 46, 52)
-	themeWarnBack     = walk.RGB(62, 48, 31)
-	themeWarnFore     = walk.RGB(255, 211, 138)
-	themeCriticalBack = walk.RGB(66, 35, 43)
+	themeBar          = walk.RGB(243, 243, 243)
+	themePanel        = walk.RGB(243, 243, 243)
+	themeFore         = walk.RGB(32, 32, 32)
+	themeMuted        = walk.RGB(96, 96, 96)
+	themeAccent       = walk.RGB(0, 99, 177)
+	themeOkBack       = walk.RGB(255, 255, 255)
+	themeInfoBack     = walk.RGB(232, 232, 232)
+	themeStatusBack   = walk.RGB(232, 232, 232)
+	themeWarnBack     = walk.RGB(255, 244, 214)
+	themeWarnFore     = walk.RGB(94, 66, 0)
+	themeCriticalBack = walk.RGB(255, 226, 226)
+	themeCriticalFore = walk.RGB(117, 21, 31)
 
 	themeSideBack        = walk.RGB(238, 238, 238)
-	themeSideTop         = walk.RGB(242, 242, 242)
+	themeSideTop         = walk.RGB(232, 232, 232)
 	themeSideCard        = walk.RGB(255, 255, 255)
 	themeSideLine        = walk.RGB(224, 224, 224)
 	themeSideText        = walk.RGB(0, 0, 0)
 	themeSideMuted       = walk.RGB(80, 80, 80)
-	themeSideBlue        = walk.RGB(0, 82, 204)
+	themeSideBlue        = walk.RGB(0, 99, 177)
 	themeSideIcon        = walk.RGB(70, 70, 70)
-	themeGaugeTrackLight = walk.RGB(245, 245, 245)
+	themeGaugeTrackLight = walk.RGB(210, 210, 210)
 	themeGaugeBorder     = walk.RGB(128, 128, 128)
-	themeGaugeFillLight  = walk.RGB(0, 128, 0)
+	themeGaugeOk         = walk.RGB(16, 124, 16)
+	themeGaugeWarn       = walk.RGB(196, 128, 0)
+	themeGaugeCrit       = walk.RGB(180, 32, 32)
 	themeCodexIcon       = walk.RGB(0, 166, 118)
 	themeGeminiIcon      = walk.RGB(92, 113, 255)
 	themeIconFore        = walk.RGB(255, 255, 255)

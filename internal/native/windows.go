@@ -91,6 +91,17 @@ func SetWorkArea(rect Rect) error {
 	return nil
 }
 
+func ScheduleWorkAreaRestore(rect Rect) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	arg := fmt.Sprintf("%d,%d,%d,%d", rect.Left, rect.Top, rect.Right, rect.Bottom)
+	cmd := exec.Command(exe, "--restore-workarea", arg, "--restore-delay-ms", "1200")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd.Start()
+}
+
 func CursorPosition() Point {
 	var pt Point
 	_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
