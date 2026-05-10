@@ -38,6 +38,20 @@ type antigravityProcess struct {
 	Token string
 }
 
+const antigravityQuotaWindow = "5h"
+
+var antigravityModelBlacklist = map[string]bool{
+	"MODEL_CHAT_20706":                       true,
+	"MODEL_CHAT_23310":                       true,
+	"MODEL_GOOGLE_GEMINI_2_5_FLASH":          true,
+	"MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING": true,
+	"MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE":     true,
+	"MODEL_GOOGLE_GEMINI_2_5_PRO":            true,
+	"MODEL_PLACEHOLDER_M19":                  true,
+	"MODEL_PLACEHOLDER_M9":                   true,
+	"MODEL_PLACEHOLDER_M12":                  true,
+}
+
 var antigravityLogOnce sync.Map
 
 var antigravityEndpointCache = struct {
@@ -158,13 +172,59 @@ func antigravityStatusCandidatePaths(root string) []string {
 }
 
 func fetchAntigravityStatus(ctx context.Context, endpoint antigravityEndpoint) (map[string]any, error) {
-	body, _ := json.Marshal(map[string]any{
-		"metadata": map[string]any{
-			"ide_name": "antigravity",
-			"source":   "limitdock",
+	if err := probeAntigravityEndpoint(ctx, endpoint); err != nil {
+		return nil, err
+	}
+	var lastErr error
+	for _, method := range []string{"GetUserStatus", "GetCommandModelConfigs"} {
+		status, err := callAntigravityRPC(ctx, endpoint, method, antigravityMetadataBody())
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(antigravityModelConfigs(status)) > 0 {
+			return status, nil
+		}
+		lastErr = fmt.Errorf("%s returned no model configs", method)
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("Antigravity endpoint returned no quota model configs")
+}
+
+func probeAntigravityEndpoint(ctx context.Context, endpoint antigravityEndpoint) error {
+	_, err := callAntigravityRPC(ctx, endpoint, "GetUnleashData", map[string]any{
+		"context": map[string]any{
+			"properties": map[string]any{
+				"devMode":          "false",
+				"extensionVersion": "unknown",
+				"ide":              "antigravity",
+				"ideVersion":       "unknown",
+				"os":               "windows",
+			},
 		},
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint.BaseURL, "/")+"/exa.language_server_pb.LanguageServerService/GetUserStatus", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func antigravityMetadataBody() map[string]any {
+	return map[string]any{
+		"metadata": map[string]any{
+			"ideName":       "antigravity",
+			"extensionName": "antigravity",
+			"ideVersion":    "unknown",
+			"locale":        "en",
+		},
+	}
+}
+
+func callAntigravityRPC(ctx context.Context, endpoint antigravityEndpoint, method string, body any) (map[string]any, error) {
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint.BaseURL, "/")+"/exa.language_server_pb.LanguageServerService/"+method, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -186,15 +246,21 @@ func fetchAntigravityStatus(ctx context.Context, endpoint antigravityEndpoint) (
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	respRaw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Antigravity status %s", resp.Status)
+		if method == "GetUnleashData" {
+			return map[string]any{}, nil
+		}
+		return nil, fmt.Errorf("Antigravity %s %s", method, resp.Status)
 	}
 	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if len(strings.TrimSpace(string(respRaw))) == 0 {
+		return map[string]any{}, nil
+	}
+	if err := json.Unmarshal(respRaw, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -356,6 +422,12 @@ func antigravitySnapshot(status map[string]any) *readmodel.Snapshot {
 	}
 
 	for _, item := range antigravityModelConfigs(status) {
+		if boolAny(item, "isInternal", "is_internal") {
+			continue
+		}
+		if id := antigravityModelID(item); id != "" && antigravityModelBlacklist[id] {
+			continue
+		}
 		name := antigravityModelName(item)
 		quotaInfo := objectAny(item, "quotaInfo", "quota_info", "quota")
 		if name == "" || quotaInfo == nil {
@@ -366,11 +438,19 @@ func antigravitySnapshot(status map[string]any) *readmodel.Snapshot {
 			continue
 		}
 		pct := normalizeRemainingPercent(remaining)
-		key := uniqueMetricKey(metrics, "quota_model_"+slug(name))
+		pool := antigravityPoolLabel(name)
+		key := "quota_model_" + slug(pool)
+		if existing, ok := metrics[key]; ok && existing.Remaining != nil && *existing.Remaining <= pct {
+			continue
+		}
+		window := firstString(quotaInfo, "window", "period")
+		if window == "" {
+			window = antigravityQuotaWindow
+		}
 		metrics[key] = readmodel.Metric{
 			Remaining: floatPtr(pct),
 			Unit:      "%",
-			Window:    firstString(quotaInfo, "window", "period"),
+			Window:    window,
 		}
 		if reset := firstString(quotaInfo, "resetTime", "reset_time", "resetAt", "reset_at"); reset != "" {
 			resets[key+"_reset"] = reset
@@ -403,6 +483,9 @@ func antigravityModelConfigs(status map[string]any) []map[string]any {
 				continue
 			}
 			if configs := arrayObjectsAny(holder, "clientModelConfigs", "client_model_configs", "models"); len(configs) > 0 {
+				return configs
+			}
+			if configs := objectValuesAny(holder, "models"); len(configs) > 0 {
 				return configs
 			}
 		}
@@ -440,13 +523,44 @@ func collectStatusRoots(v any, out *[]map[string]any, depth int) {
 }
 
 func antigravityModelName(item map[string]any) string {
-	if name := firstString(item, "model", "modelId", "model_id", "label", "displayName", "display_name"); name != "" {
+	if name := firstString(item, "label", "displayName", "display_name", "name", "modelId", "model_id", "model"); name != "" {
 		return name
 	}
 	if model := objectAny(item, "modelOrAlias", "model_or_alias"); model != nil {
-		return firstString(model, "model", "modelId", "model_id", "alias", "label", "displayName", "display_name")
+		return firstString(model, "label", "displayName", "display_name", "alias", "model", "modelId", "model_id")
 	}
 	return ""
+}
+
+func antigravityModelID(item map[string]any) string {
+	if id := firstString(item, "model", "modelId", "model_id"); id != "" {
+		return id
+	}
+	if model := objectAny(item, "modelOrAlias", "model_or_alias"); model != nil {
+		return firstString(model, "model", "modelId", "model_id")
+	}
+	return ""
+}
+
+func antigravityPoolLabel(label string) string {
+	label = normalizeAntigravityLabel(label)
+	lower := strings.ToLower(label)
+	if strings.Contains(lower, "gemini") && strings.Contains(lower, "pro") {
+		return "Gemini Pro"
+	}
+	if strings.Contains(lower, "gemini") && strings.Contains(lower, "flash") {
+		return "Gemini Flash"
+	}
+	if strings.Contains(lower, "claude") || strings.Contains(lower, "gpt-oss") || strings.Contains(lower, "gpt oss") {
+		return "Claude"
+	}
+	return label
+}
+
+func normalizeAntigravityLabel(label string) string {
+	label = strings.TrimSpace(label)
+	label = regexp.MustCompile(`\s*\([^)]*\)\s*$`).ReplaceAllString(label, "")
+	return strings.TrimSpace(label)
 }
 
 func readJSONMap(path string) (map[string]any, error) {
@@ -485,21 +599,6 @@ func copyEndpoints(in []antigravityEndpoint) []antigravityEndpoint {
 	out := make([]antigravityEndpoint, len(in))
 	copy(out, in)
 	return out
-}
-
-func uniqueMetricKey(metrics map[string]readmodel.Metric, key string) string {
-	if key == "" || key == "quota_model_" {
-		key = "quota_model_antigravity"
-	}
-	if _, exists := metrics[key]; !exists {
-		return key
-	}
-	for i := 2; ; i++ {
-		candidate := key + "_" + strconv.Itoa(i)
-		if _, exists := metrics[candidate]; !exists {
-			return candidate
-		}
-	}
 }
 
 func slug(raw string) string {
@@ -562,6 +661,23 @@ func arrayObjectsAny(m map[string]any, keys ...string) []map[string]any {
 	return nil
 }
 
+func objectValuesAny(m map[string]any, keys ...string) []map[string]any {
+	for _, key := range keys {
+		items, ok := m[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		out := []map[string]any{}
+		for _, item := range items {
+			if obj, ok := item.(map[string]any); ok {
+				out = append(out, obj)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 func firstString(m map[string]any, keys ...string) string {
 	for _, key := range keys {
 		switch v := m[key].(type) {
@@ -576,6 +692,18 @@ func firstString(m map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func boolAny(m map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		switch v := m[key].(type) {
+		case bool:
+			return v
+		case string:
+			return strings.EqualFold(strings.TrimSpace(v), "true")
+		}
+	}
+	return false
 }
 
 func firstNumber(m map[string]any, keys ...string) (float64, bool) {
