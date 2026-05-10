@@ -52,3 +52,27 @@ func TestAntigravityStatusReadModelBuildsQuotaSnapshot(t *testing.T) {
 		t.Fatalf("expected model reset: %#v", snap.Resets)
 	}
 }
+
+func TestAntigravityStatusReadModelFindsNestedQuota(t *testing.T) {
+	status := map[string]any{
+		"cached": map[string]any{
+			"deep": []any{
+				map[string]any{
+					"user": map[string]any{"email": "user@example.com"},
+					"clientModelConfigs": []any{
+						map[string]any{
+							"model": "gemini-3-pro",
+							"quotaInfo": map[string]any{
+								"remainingFraction": float64(0.5),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	model := antigravityStatusReadModel(status, settings.Defaults().Antigravity)
+	if model.Snapshots["antigravity-user@example.com"] == nil {
+		t.Fatalf("expected nested antigravity snapshot: %#v", model.Snapshots)
+	}
+}

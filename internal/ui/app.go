@@ -12,9 +12,9 @@ import (
 
 	"github.com/lxn/walk"
 
+	openusage "limitdock/internal/connector/openusage"
 	"limitdock/internal/logging"
 	"limitdock/internal/native"
-	"limitdock/internal/openusage"
 	"limitdock/internal/paths"
 	"limitdock/internal/provider"
 	"limitdock/internal/quota"
@@ -76,6 +76,7 @@ func Run(p paths.Paths, opts Options) error {
 	if opts.RefreshSeconds >= 5 {
 		cfg.RefreshSeconds = opts.RefreshSeconds
 	}
+	applyTheme(cfg.Theme)
 	app := &App{
 		paths:       p,
 		cfg:         cfg,
@@ -243,10 +244,13 @@ func (a *App) refreshOnce() {
 
 func (a *App) providerReaders() []provider.Reader {
 	readers := []provider.Reader{
-		provider.OpenUsageReader{
+		openusage.OpenUsageReader{
 			Client:       readmodel.Client{SocketPath: a.paths.SocketPath},
-			SettingsPath: provider.OpenUsageSettingsPath(),
+			SettingsPath: openusage.SettingsPath(),
 			Log:          a.log,
+		},
+		provider.CodexReader{
+			Log: a.log,
 		},
 	}
 	if a.cfg.Antigravity.Enabled {
@@ -891,7 +895,7 @@ func (a *App) showSettingsDialog() {
 	}
 	defer dlg.Dispose()
 	_ = dlg.SetTitle("LimitDock Settings")
-	_ = dlg.SetClientSize(walk.Size{Width: 620, Height: 520})
+	_ = dlg.SetClientSize(walk.Size{Width: 620, Height: 550})
 	root := walk.NewVBoxLayout()
 	_ = root.SetMargins(walk.Margins{HNear: 14, VNear: 14, HFar: 14, VFar: 14})
 	_ = root.SetSpacing(8)
@@ -899,6 +903,7 @@ func (a *App) showSettingsDialog() {
 
 	mode := combo(dlg, "Display mode", []string{"reserved", "overlay"}, a.cfg.DockMode)
 	edge := combo(dlg, "Dock edge", []string{"bottom", "top", "left", "right"}, a.cfg.DockEdge)
+	theme := combo(dlg, "Theme", []string{"light", "night"}, a.cfg.Theme)
 	startup := checkbox(dlg, "Start LimitDock when Windows starts", native.StartupEnabled())
 	slide := checkbox(dlg, "Slide away when overlay is unpinned", a.cfg.AutoHide)
 	refresh := number(dlg, "Refresh seconds", float64(a.cfg.RefreshSeconds), 5, 600)
@@ -920,6 +925,7 @@ func (a *App) showSettingsDialog() {
 	save.Clicked().Attach(func() {
 		a.cfg.DockMode = strings.ToLower(strings.TrimSpace(mode.Text()))
 		a.cfg.DockEdge = strings.ToLower(strings.TrimSpace(edge.Text()))
+		a.cfg.Theme = strings.ToLower(strings.TrimSpace(theme.Text()))
 		a.cfg.StartWithWindows = startup.Checked()
 		a.cfg.AutoHide = slide.Checked()
 		a.cfg.RefreshSeconds = int(refresh.Value())
@@ -939,12 +945,14 @@ func (a *App) showSettingsDialog() {
 			walk.MsgBox(dlg, "LimitDock", err.Error(), walk.MsgBoxIconWarning)
 		}
 		dlg.Accept()
+		a.applyTheme()
 		a.applyDock()
 		a.refreshOnce()
 	})
 	cancel.Clicked().Attach(func() { dlg.Cancel() })
 	_ = dlg.SetDefaultButton(save)
 	_ = dlg.SetCancelButton(cancel)
+	native.FocusTopmost(uintptr(dlg.Handle()))
 	dlg.Run()
 }
 
@@ -976,6 +984,17 @@ func (a *App) setStatus(text string) {
 	a.mu.Lock()
 	a.status = text
 	a.mu.Unlock()
+	a.invalidate()
+}
+
+func (a *App) applyTheme() {
+	applyTheme(a.cfg.Theme)
+	if a.mw == nil || a.mw.IsDisposed() {
+		return
+	}
+	if brush, err := walk.NewSolidColorBrush(themeBar); err == nil {
+		a.mw.SetBackground(brush)
+	}
 	a.invalidate()
 }
 
@@ -1230,6 +1249,75 @@ func sideCaption(band quota.Band) string {
 
 func isSide(edge string) bool {
 	return edge == "left" || edge == "right"
+}
+
+func applyTheme(name string) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "night":
+		applyNightTheme()
+	default:
+		applyLightTheme()
+	}
+}
+
+func applyLightTheme() {
+	themeBar = walk.RGB(243, 243, 243)
+	themeFore = walk.RGB(32, 32, 32)
+	themeMuted = walk.RGB(96, 96, 96)
+	themeAccent = walk.RGB(0, 99, 177)
+	themeOkBack = walk.RGB(255, 255, 255)
+	themeInfoBack = walk.RGB(232, 232, 232)
+	themeStatusBack = walk.RGB(232, 232, 232)
+	themeWarnBack = walk.RGB(255, 244, 214)
+	themeWarnFore = walk.RGB(94, 66, 0)
+	themeCriticalBack = walk.RGB(255, 226, 226)
+	themeCriticalFore = walk.RGB(117, 21, 31)
+	themeSideBack = walk.RGB(238, 238, 238)
+	themeSideTop = walk.RGB(232, 232, 232)
+	themeSideCard = walk.RGB(255, 255, 255)
+	themeSideLine = walk.RGB(224, 224, 224)
+	themeSideText = walk.RGB(0, 0, 0)
+	themeSideMuted = walk.RGB(80, 80, 80)
+	themeSideBlue = walk.RGB(0, 99, 177)
+	themeSideIcon = walk.RGB(70, 70, 70)
+	themeGaugeTrackLight = walk.RGB(210, 210, 210)
+	themeGaugeBorder = walk.RGB(128, 128, 128)
+	themeGaugeOk = walk.RGB(16, 124, 16)
+	themeGaugeWarn = walk.RGB(196, 128, 0)
+	themeGaugeCrit = walk.RGB(180, 32, 32)
+	themeCodexIcon = walk.RGB(0, 166, 118)
+	themeGeminiIcon = walk.RGB(92, 113, 255)
+	themeIconFore = walk.RGB(255, 255, 255)
+}
+
+func applyNightTheme() {
+	themeBar = walk.RGB(23, 27, 32)
+	themeFore = walk.RGB(236, 239, 244)
+	themeMuted = walk.RGB(166, 174, 186)
+	themeAccent = walk.RGB(94, 168, 255)
+	themeOkBack = walk.RGB(33, 38, 46)
+	themeInfoBack = walk.RGB(40, 46, 55)
+	themeStatusBack = walk.RGB(40, 46, 55)
+	themeWarnBack = walk.RGB(73, 56, 28)
+	themeWarnFore = walk.RGB(255, 219, 140)
+	themeCriticalBack = walk.RGB(74, 37, 43)
+	themeCriticalFore = walk.RGB(255, 176, 184)
+	themeSideBack = walk.RGB(24, 28, 34)
+	themeSideTop = walk.RGB(31, 36, 43)
+	themeSideCard = walk.RGB(35, 40, 48)
+	themeSideLine = walk.RGB(58, 64, 74)
+	themeSideText = walk.RGB(238, 241, 245)
+	themeSideMuted = walk.RGB(166, 174, 186)
+	themeSideBlue = walk.RGB(114, 183, 255)
+	themeSideIcon = walk.RGB(210, 216, 225)
+	themeGaugeTrackLight = walk.RGB(70, 76, 86)
+	themeGaugeBorder = walk.RGB(110, 118, 130)
+	themeGaugeOk = walk.RGB(50, 180, 92)
+	themeGaugeWarn = walk.RGB(224, 168, 58)
+	themeGaugeCrit = walk.RGB(226, 88, 96)
+	themeCodexIcon = walk.RGB(0, 166, 118)
+	themeGeminiIcon = walk.RGB(104, 128, 255)
+	themeIconFore = walk.RGB(255, 255, 255)
 }
 
 var (

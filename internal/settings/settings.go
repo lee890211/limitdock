@@ -19,6 +19,7 @@ type Settings struct {
 	AutoHide         bool                       `json:"autoHide"`
 	DockMode         string                     `json:"dockMode"`
 	DockEdge         string                     `json:"dockEdge"`
+	Theme            string                     `json:"theme"`
 	StartWithWindows bool                       `json:"startWithWindows"`
 	HiddenQuotaBands map[string]map[string]bool `json:"hiddenQuotaBands"`
 	Antigravity      Antigravity                `json:"antigravity"`
@@ -33,6 +34,7 @@ func Defaults() Settings {
 		AutoHide:         false,
 		DockMode:         "reserved",
 		DockEdge:         "bottom",
+		Theme:            "light",
 		StartWithWindows: false,
 		HiddenQuotaBands: map[string]map[string]bool{},
 		Antigravity: Antigravity{
@@ -83,6 +85,12 @@ func (s *Settings) Normalize() {
 	case "top", "bottom", "left", "right":
 	default:
 		s.DockEdge = d.DockEdge
+	}
+	s.Theme = strings.ToLower(strings.TrimSpace(s.Theme))
+	switch s.Theme {
+	case "light", "night":
+	default:
+		s.Theme = d.Theme
 	}
 	if s.HiddenQuotaBands == nil {
 		s.HiddenQuotaBands = map[string]map[string]bool{}

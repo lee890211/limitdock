@@ -1,4 +1,4 @@
-package provider
+package openusage
 
 import (
 	"context"
@@ -19,7 +19,7 @@ func fetchOpenUsageMerged(ctx context.Context, client readmodel.Client, settings
 	if !needsCodexSupplement(primary.Snapshots) {
 		return primary, nil
 	}
-	tw := OpenUsageSettingsTimeWindow(settingsPath)
+	tw := SettingsTimeWindow(settingsPath)
 	supplement, _, err := client.Read(ctx, map[string]any{
 		"time_window": tw,
 		"accounts": []map[string]string{
@@ -111,7 +111,7 @@ func mergeCodexSnapshots(primary, supplement map[string]*readmodel.Snapshot, log
 	return ordered
 }
 
-func OpenUsageSettingsPath() string {
+func SettingsPath() string {
 	if appData := os.Getenv("APPDATA"); appData != "" {
 		return filepath.Join(appData, "openusage", "settings.json")
 	}
@@ -119,9 +119,9 @@ func OpenUsageSettingsPath() string {
 	return filepath.Join(home, "AppData", "Roaming", "openusage", "settings.json")
 }
 
-func OpenUsageSettingsTimeWindow(path string) string {
+func SettingsTimeWindow(path string) string {
 	if path == "" {
-		path = OpenUsageSettingsPath()
+		path = SettingsPath()
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {

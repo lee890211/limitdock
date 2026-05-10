@@ -1,6 +1,6 @@
 # Architecture
 
-LimitDock is a Go native Windows shell around OpenUsage.sh. The main boundary is the OpenUsage read model: LimitDock supervises the daemon, reads snapshots, normalizes quota rows, and renders the bar.
+LimitDock is a Go native Windows shell around a normalized quota read model. OpenUsage.sh is the primary connector: LimitDock supervises the daemon, reads snapshots, normalizes quota rows, and renders the bar. Local custom readers can fill provider gaps when OpenUsage does not expose quota rows.
 
 ## Runtime Boundary
 
@@ -8,21 +8,23 @@ LimitDock is a Go native Windows shell around OpenUsage.sh. The main boundary is
 
 - single-instance mutex and PID file
 - OpenUsage daemon start/stop
-- read-model socket calls
+- OpenUsage read-model socket calls
+- local custom provider fallback reads
 - native Windows status bar and tray icon
 - settings persistence
 
 The runtime app does not invoke external shell scripts. Startup registration, docking, tray behavior, OpenUsage process management, and work-area restore are implemented from Go.
 
-OpenUsage.sh owns provider discovery and telemetry. LimitDock does not parse vendor databases directly for quota.
+OpenUsage.sh owns provider discovery and telemetry for upstream-supported providers. LimitDock custom readers are intentionally narrow and quota-only; they are used for missing providers or fallbacks, not as a replacement telemetry system.
 
 ## Provider Readers
 
 `internal/provider` is the single read boundary for quota sources. The UI asks the provider `Aggregator` for one `readmodel.ReadModel`; it does not know whether a snapshot came from OpenUsage or a LimitDock custom reader.
 
-- `OpenUsageReader` reads `/v1/read-model` from the OpenUsage daemon socket and keeps the Codex supplemental merge behind that adapter.
+- `internal/connector/openusage` owns the external OpenUsage connector: daemon management, settings/account bootstrap, socket reads, and the Codex supplemental OpenUsage merge.
+- `OpenUsageReader` reads `/v1/read-model` from the OpenUsage daemon socket and is registered first.
 - Custom readers emit the same `readmodel.Snapshot` and `readmodel.Metric` shape, so `internal/quota` can normalize all providers through one path.
-- Duplicate snapshot keys keep the first reader's data. OpenUsage is registered first so upstream support wins over local custom fallback data.
+- Duplicate snapshot keys keep the first reader's data. Fallback readers also declare a provider id; when OpenUsage already has quota rows for that provider, the fallback snapshot is skipped even if its account key differs.
 
 Quota normalization is intentionally narrow:
 
@@ -40,6 +42,7 @@ Codex:
 
 - Codex needs integration setup because local Codex telemetry is delivered through an OpenUsage notify hook and a `codex-cli` OpenUsage account/link.
 - Codex also needs a supplemental read because OpenUsage's default read model can omit quota rows unless Codex is queried with its account/provider filter and configured time window.
+- If OpenUsage still has no Codex quota rows, the custom Codex fallback reader scans recent `.codex/sessions` JSONL events for `rate_limits`.
 - Keep `rate_limit_codex_bengalfox_*` rows.
 - Prefer `attributes.rate_limit_codex_bengalfox_name` or matching raw name fields for labels such as `GPT-5.3-Codex-Spark`.
 
@@ -56,7 +59,7 @@ Cursor:
 Antigravity:
 
 - Antigravity is handled as a quota-only custom reader when OpenUsage does not expose it.
-- The custom reader looks for local Antigravity language-server status or explicit JSON cache hints and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
+- The custom reader looks for local Antigravity language-server status, common `%APPDATA%\Antigravity` cache locations, or explicit JSON cache hints and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
 - If no quota rows are available, Antigravity is not rendered as a status-only card.
 
 ## Settings
@@ -65,6 +68,7 @@ Antigravity:
 
 - `dockMode`
 - `dockEdge`
+- `theme`
 - `autoHide`
 - `hiddenQuotaBands`
 - `startWithWindows`

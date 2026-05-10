@@ -296,6 +296,9 @@ func DisplayQuotaMetricKey(snap *readmodel.Snapshot, raw string) bool {
 	}
 	if provider == "codex" && strings.HasPrefix(k, "rate_limit_") {
 		core := strings.TrimPrefix(k, "rate_limit_")
+		if strings.HasSuffix(core, "_primary") || strings.HasSuffix(core, "_secondary") {
+			return true
+		}
 		core = regexp.MustCompile(`_(primary|secondary)$`).ReplaceAllString(core, "")
 		if core == "primary" || core == "secondary" || core == "code_review" {
 			return true

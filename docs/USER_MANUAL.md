@@ -73,7 +73,7 @@ Dock edges:
 - `left`
 - `right`
 
-Dock mode, dock edge, auto-hide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time.
+Dock mode, dock edge, theme, auto-hide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time. Themes are `light` and `night`.
 
 `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Clear the checkbox to remove the value. Older `LimitDock.lnk` startup shortcuts are cleaned up when this setting changes.
 
@@ -83,6 +83,7 @@ Codex:
 
 - Shows `rate_limit_*` rows.
 - Keeps Spark/Bengalfox rows and labels them from OpenUsage attributes when available.
+- Uses OpenUsage first. If OpenUsage does not expose Codex quota rows, the local fallback reader scans recent Codex session rate-limit events and emits the same quota shape.
 
 Cursor:
 
@@ -98,7 +99,7 @@ Antigravity:
 
 - Appears only when LimitDock can read quota-like Antigravity data locally.
 - LimitDock does not show an Antigravity status-only card. It needs percent/reset or prompt-credit quota data.
-- Optional hints can be set in Settings through `antigravity.binaryPath` as an endpoint URL hint and `antigravity.dataDir` as a JSON cache directory or endpoint URL.
+- LimitDock tries the running local language-server endpoint and common `%APPDATA%\Antigravity` cache locations automatically. Optional hints can be set in Settings through `antigravity.binaryPath` as an endpoint URL hint and `antigravity.dataDir` as a JSON cache directory or endpoint URL.
 
 For the upstream provider list, see [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there should be handled through OpenUsage. Providers outside OpenUsage should be added through a LimitDock custom reader that emits the same normalized quota rows.
 

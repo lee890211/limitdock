@@ -18,6 +18,10 @@ type Reader interface {
 	Read(ctx context.Context) (*readmodel.ReadModel, error)
 }
 
+type FallbackReader interface {
+	FallbackProviderID() string
+}
+
 type Aggregator struct {
 	Readers []Reader
 	Log     Logger
@@ -40,12 +44,61 @@ func (a Aggregator) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 			}
 			continue
 		}
+		if fallback, ok := reader.(FallbackReader); ok {
+			model = filterFallbackModel(out, model, fallback.FallbackProviderID(), reader.Name(), a.Log)
+		}
 		mergeReadModel(out, model, reader.Name(), a.Log)
 	}
 	if len(out.Snapshots) == 0 && firstErr != nil {
 		return nil, firstErr
 	}
 	return orderReadModel(out), nil
+}
+
+func filterFallbackModel(existing, fallback *readmodel.ReadModel, providerID, source string, log Logger) *readmodel.ReadModel {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	if providerID == "" || fallback == nil || len(fallback.Snapshots) == 0 || !hasProviderQuota(existing, providerID) {
+		return fallback
+	}
+	out := &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{}}
+	for key, snap := range fallback.Snapshots {
+		if snap == nil || strings.ToLower(strings.TrimSpace(snap.ProviderID)) == providerID {
+			if log != nil && key != "__invalid" {
+				log.Printf("Provider fallback %s skipped %s because %s already has quota rows", source, key, providerID)
+			}
+			continue
+		}
+		out.Snapshots[key] = snap
+	}
+	return out
+}
+
+func hasProviderQuota(model *readmodel.ReadModel, providerID string) bool {
+	if model == nil {
+		return false
+	}
+	for _, snap := range model.Snapshots {
+		if snap == nil || strings.ToLower(strings.TrimSpace(snap.ProviderID)) != providerID {
+			continue
+		}
+		for key, metric := range snap.Metrics {
+			if isQuotaMetric(key, metric) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isQuotaMetric(key string, metric readmodel.Metric) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "quota" || strings.HasPrefix(k, "quota_") || strings.HasPrefix(k, "rate_limit_") || strings.HasPrefix(k, "usage_seven_day") {
+		return true
+	}
+	if k == "usage_five_hour" || k == "plan_percent_used" || strings.HasSuffix(k, "_quota") {
+		return true
+	}
+	return metric.Unit == "%"
 }
 
 func mergeReadModel(dst, src *readmodel.ReadModel, source string, log Logger) {

@@ -18,6 +18,9 @@ func TestLoadSettingsExampleShape(t *testing.T) {
 	if cfg.GaugeMaxBands != 4 || cfg.RefreshSeconds != 30 {
 		t.Fatalf("unexpected gauge/refresh defaults: %#v", cfg)
 	}
+	if cfg.Theme != "light" {
+		t.Fatalf("unexpected theme default: %#v", cfg)
+	}
 	if !cfg.Antigravity.Enabled {
 		t.Fatalf("antigravity default should remain enabled")
 	}
@@ -29,6 +32,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	cfg := Defaults()
 	cfg.DockMode = "overlay"
 	cfg.DockEdge = "right"
+	cfg.Theme = "night"
 	cfg.HiddenQuotaBands["codex"] = map[string]bool{"rate_limit_primary": true}
 	if err := Save(path, cfg); err != nil {
 		t.Fatalf("save: %v", err)
@@ -37,7 +41,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if loaded.DockMode != "overlay" || loaded.DockEdge != "right" {
+	if loaded.DockMode != "overlay" || loaded.DockEdge != "right" || loaded.Theme != "night" {
 		t.Fatalf("round trip lost dock fields: %#v", loaded)
 	}
 	if !loaded.HiddenQuotaBands["codex"]["rate_limit_primary"] {

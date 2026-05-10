@@ -119,6 +119,13 @@ func SetTopmost(hwnd uintptr) {
 	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
 }
 
+func FocusTopmost(hwnd uintptr) {
+	_, _, _ = procShowWindow.Call(hwnd, swShow)
+	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
+	_, _, _ = procBringWindowToTop.Call(hwnd)
+	_, _, _ = procSetForegroundWindow.Call(hwnd)
+}
+
 func SetDockBoundsVisible(hwnd uintptr, rect Rect) {
 	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlStyle), uintptr(styleDockBase|wsVisible))
 	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(exStyleDock))
@@ -297,6 +304,8 @@ var (
 	procGetWindowLong        = user32.NewProc("GetWindowLongW")
 	procSetWindowLong        = user32.NewProc("SetWindowLongW")
 	procSetWindowPos         = user32.NewProc("SetWindowPos")
+	procBringWindowToTop     = user32.NewProc("BringWindowToTop")
+	procSetForegroundWindow  = user32.NewProc("SetForegroundWindow")
 	procPostMessage          = user32.NewProc("PostMessageW")
 	procShowWindow           = user32.NewProc("ShowWindow")
 	procGetDpiForWindow      = user32.NewProc("GetDpiForWindow")
@@ -327,6 +336,7 @@ const (
 	exStyleDock    = wsExTopmost | wsExToolWindow | wsExNoActivate
 	wmNull         = 0x0000
 	swHide         = 0x0000
+	swShow         = 0x0005
 
 	hwndTopmost = ^uintptr(0)
 

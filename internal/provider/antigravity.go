@@ -54,6 +54,10 @@ func (r AntigravityReader) Name() string {
 	return "antigravity"
 }
 
+func (r AntigravityReader) FallbackProviderID() string {
+	return "antigravity"
+}
+
 func (r AntigravityReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 	if !r.Config.Enabled {
 		return emptyReadModel(), nil
@@ -84,20 +88,82 @@ func (r AntigravityReader) Read(ctx context.Context) (*readmodel.ReadModel, erro
 }
 
 func (r AntigravityReader) cachedStatuses() []map[string]any {
-	root := strings.TrimSpace(r.Config.DataDir)
-	if root == "" {
-		return nil
+	roots := []string{}
+	if root := strings.TrimSpace(r.Config.DataDir); root != "" {
+		roots = append(roots, root)
 	}
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
-		return nil
-	}
+	roots = append(roots, defaultAntigravityDataDirs()...)
+
 	out := []map[string]any{}
-	for _, name := range []string{"antigravity-status.json", "user-status.json", "quota.json", "usage.json"} {
-		status, err := readJSONMap(filepath.Join(root, name))
-		if err == nil {
-			out = append(out, status)
+	seen := map[string]bool{}
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" || seen[strings.ToLower(root)] {
+			continue
 		}
+		seen[strings.ToLower(root)] = true
+		info, err := os.Stat(root)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		for _, path := range antigravityStatusCandidatePaths(root) {
+			status, err := readJSONMap(path)
+			if err == nil {
+				out = append(out, status)
+			}
+		}
+	}
+	return out
+}
+
+func defaultAntigravityDataDirs() []string {
+	out := []string{}
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		out = append(out, filepath.Join(appData, "Antigravity"))
+	}
+	return out
+}
+
+func antigravityStatusCandidatePaths(root string) []string {
+	candidates := []string{
+		filepath.Join(root, "antigravity-status.json"),
+		filepath.Join(root, "user-status.json"),
+		filepath.Join(root, "quota.json"),
+		filepath.Join(root, "usage.json"),
+		filepath.Join(root, "User", "globalStorage", "storage.json"),
+	}
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		if d.IsDir() {
+			rel, _ := filepath.Rel(root, path)
+			if rel != "." && strings.Count(rel, string(os.PathSeparator)) > 5 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if len(candidates) >= 40 || strings.ToLower(filepath.Ext(path)) != ".json" {
+			return nil
+		}
+		lower := strings.ToLower(path)
+		for _, needle := range []string{"quota", "usage", "status", "storage", "antigravity"} {
+			if strings.Contains(lower, needle) {
+				candidates = append(candidates, path)
+				break
+			}
+		}
+		return nil
+	})
+	seen := map[string]bool{}
+	out := []string{}
+	for _, path := range candidates {
+		key := strings.ToLower(filepath.Clean(path))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, path)
 	}
 	return out
 }
@@ -379,19 +445,32 @@ func antigravityModelConfigs(status map[string]any) []map[string]any {
 }
 
 func statusRoots(status map[string]any) []map[string]any {
-	roots := []map[string]any{status}
-	for _, key := range []string{"response", "result", "data"} {
-		if child := objectAny(status, key); child != nil {
-			roots = append(roots, child)
-			if user := objectAny(child, "userStatus", "user_status", "user"); user != nil {
-				roots = append(roots, user)
+	roots := []map[string]any{}
+	collectStatusRoots(status, &roots, 0)
+	return roots
+}
+
+func collectStatusRoots(v any, out *[]map[string]any, depth int) {
+	if depth > 8 || len(*out) >= 256 {
+		return
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		*out = append(*out, x)
+		for _, child := range x {
+			collectStatusRoots(child, out, depth+1)
+			if len(*out) >= 256 {
+				return
+			}
+		}
+	case []any:
+		for _, child := range x {
+			collectStatusRoots(child, out, depth+1)
+			if len(*out) >= 256 {
+				return
 			}
 		}
 	}
-	if user := objectAny(status, "userStatus", "user_status", "user"); user != nil {
-		roots = append(roots, user)
-	}
-	return roots
 }
 
 func antigravityModelName(item map[string]any) string {
