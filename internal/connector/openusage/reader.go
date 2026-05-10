@@ -6,16 +6,15 @@ import (
 	"limitdock/internal/readmodel"
 )
 
-type OpenUsageReader struct {
-	Client       readmodel.Client
-	SettingsPath string
-	Log          Logger
+type Reader struct {
+	Client readmodel.Client
 }
 
-func (r OpenUsageReader) Name() string {
+func (r Reader) Name() string {
 	return "openusage"
 }
 
-func (r OpenUsageReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
-	return fetchOpenUsageMerged(ctx, r.Client, r.SettingsPath, r.Log)
+func (r Reader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
+	model, _, err := r.Client.Read(ctx, map[string]any{})
+	return model, err
 }

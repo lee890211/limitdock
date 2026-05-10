@@ -21,9 +21,6 @@ func TestLoadSettingsExampleShape(t *testing.T) {
 	if cfg.Theme != "light" {
 		t.Fatalf("unexpected theme default: %#v", cfg)
 	}
-	if !cfg.Antigravity.Enabled {
-		t.Fatalf("antigravity default should remain enabled")
-	}
 }
 
 func TestSaveRoundTrip(t *testing.T) {

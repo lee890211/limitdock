@@ -21,8 +21,8 @@ OpenUsage.sh owns provider discovery and telemetry for upstream-supported provid
 
 `internal/provider` is the single read boundary for quota sources. The UI asks the provider `Aggregator` for one `readmodel.ReadModel`; it does not know whether a snapshot came from OpenUsage or a LimitDock custom reader.
 
-- `internal/connector/openusage` owns the external OpenUsage connector: daemon management, settings/account bootstrap, socket reads, and the Codex supplemental OpenUsage merge.
-- `OpenUsageReader` reads `/v1/read-model` from the OpenUsage daemon socket and is registered first.
+- `internal/connector/openusage` owns the external OpenUsage connector: daemon management and socket reads.
+- `openusage.Reader` reads `/v1/read-model` from the OpenUsage daemon socket and is registered first.
 - Custom readers emit the same `readmodel.Snapshot` and `readmodel.Metric` shape, so `internal/quota` can normalize all providers through one path.
 - Duplicate snapshot keys keep the first reader's data. Fallback readers also declare a provider id; when OpenUsage already has quota rows for that provider, the fallback snapshot is skipped even if its account key differs.
 
@@ -40,9 +40,7 @@ Throughput, spend, request, token, and cost metrics are filtered before renderin
 
 Codex:
 
-- Codex needs integration setup because local Codex telemetry is delivered through an OpenUsage notify hook and a `codex-cli` OpenUsage account/link.
-- Codex also needs a supplemental read because OpenUsage's default read model can omit quota rows unless Codex is queried with its account/provider filter and configured time window.
-- If OpenUsage still has no Codex quota rows, the custom Codex fallback reader scans recent `.codex/sessions` JSONL events for `rate_limits`.
+- OpenUsage is read first. If OpenUsage has no Codex quota rows, the custom Codex fallback reader scans recent `.codex/sessions` JSONL events for `rate_limits`.
 - Keep `rate_limit_codex_bengalfox_*` rows.
 - Prefer `attributes.rate_limit_codex_bengalfox_name` or matching raw name fields for labels such as `GPT-5.3-Codex-Spark`.
 
@@ -59,7 +57,7 @@ Cursor:
 Antigravity:
 
 - Antigravity is handled as a quota-only custom reader when OpenUsage does not expose it.
-- The custom reader looks for local Antigravity language-server status, common `%APPDATA%\Antigravity` cache locations, or explicit JSON cache hints and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
+- The custom reader looks for local Antigravity language-server status and common `%APPDATA%\Antigravity` cache locations, and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
 - If no quota rows are available, Antigravity is not rendered as a status-only card.
 
 ## Settings

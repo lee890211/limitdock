@@ -17,7 +17,7 @@ LimitDock intentionally does not show spend, token totals, request counts, tool-
 
 LimitDock is built on [openusage](https://github.com/janekbaraniewski/openusage). It is not a replacement for openusage: provider discovery, telemetry, and the read model belong there. LimitDock supervises the openusage daemon, reads its local read-model endpoint, normalizes quota-like rows, and renders them as a native Windows dock. Many thanks to the openusage maintainers for building the local usage/quota foundation this project depends on.
 
-Provider support follows OpenUsage's upstream provider list where possible. See [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there are handled through the `connector/openusage` adapter. Providers not exposed by OpenUsage, or providers that need a local fallback when OpenUsage has no quota rows, live as LimitDock custom readers that emit the same internal read model.
+Provider support follows OpenUsage's upstream provider list where possible. See [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there are handled through the `connector/openusage` reader. Providers not exposed by OpenUsage, or providers that need a local fallback when OpenUsage has no quota rows, live in `internal/provider` as custom readers that emit the same internal read model.
 
 ## User Guide
 
@@ -45,7 +45,7 @@ Right-click the tray icon:
 
 - `Hide Status Bar`: hides the dock, unregisters reserved mode, restores the Windows work area, disables hover reveal, and pauses refresh. Hide is session-only.
 - `Show Status Bar`: restores the saved mode, edge, and pin state, then refreshes.
-- `Settings`: opens docking, refresh, threshold, and provider path settings.
+- `Settings`: opens docking, theme, refresh, startup, and threshold settings.
 - `Exit`: closes LimitDock and stops the managed openusage daemon.
 
 ### Docking
@@ -59,7 +59,7 @@ Edges are `bottom`, `top`, `left`, and `right`. You can change display mode and 
 
 `Theme` in `Settings` switches between `light` and `night`. `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value.
 
-Antigravity support is quota-only. If OpenUsage does not expose Antigravity, LimitDock tries its custom reader and renders a card only when it can read local percent/reset or prompt-credit quota data. It does not add an installation/status placeholder card.
+Antigravity support is quota-only and automatic. If OpenUsage does not expose Antigravity, LimitDock tries its custom reader and renders a card only when it can read local percent/reset or prompt-credit quota data. It does not add an installation/status placeholder card.
 
 ## Install
 

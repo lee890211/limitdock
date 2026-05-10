@@ -197,7 +197,6 @@ func (a *App) bootstrapOpenUsage(noDownload bool) {
 		a.setStatus("OpenUsage unavailable")
 		return
 	}
-	a.manager.EnsureCodexIntegration(a.ctx)
 	if err := a.manager.Start(); err != nil {
 		a.log.Printf("Failed to launch daemon process: %v", err)
 		a.setStatus("Waiting for OpenUsage")
@@ -244,21 +243,14 @@ func (a *App) refreshOnce() {
 
 func (a *App) providerReaders() []provider.Reader {
 	readers := []provider.Reader{
-		openusage.OpenUsageReader{
-			Client:       readmodel.Client{SocketPath: a.paths.SocketPath},
-			SettingsPath: openusage.SettingsPath(),
-			Log:          a.log,
+		openusage.Reader{
+			Client: readmodel.Client{SocketPath: a.paths.SocketPath},
 		},
 		provider.CodexReader{
 			Log: a.log,
 		},
 	}
-	if a.cfg.Antigravity.Enabled {
-		readers = append(readers, provider.AntigravityReader{
-			Config: a.cfg.Antigravity,
-			Log:    a.log,
-		})
-	}
+	readers = append(readers, provider.AntigravityReader{Log: a.log})
 	return readers
 }
 
@@ -747,7 +739,7 @@ func (a *App) hoverLoop() {
 		case <-a.ctx.Done():
 			return
 		case <-ticker.C:
-			if a.cfg.DockMode != "overlay" || !a.cfg.AutoHide || a.mw == nil || a.mw.IsDisposed() {
+			if !a.isVisible() || a.cfg.DockMode != "overlay" || !a.cfg.AutoHide || a.mw == nil || a.mw.IsDisposed() {
 				continue
 			}
 			pos := native.CursorPosition()
@@ -895,7 +887,7 @@ func (a *App) showSettingsDialog() {
 	}
 	defer dlg.Dispose()
 	_ = dlg.SetTitle("LimitDock Settings")
-	_ = dlg.SetClientSize(walk.Size{Width: 620, Height: 550})
+	_ = dlg.SetClientSize(walk.Size{Width: 620, Height: 430})
 	root := walk.NewVBoxLayout()
 	_ = root.SetMargins(walk.Margins{HNear: 14, VNear: 14, HFar: 14, VFar: 14})
 	_ = root.SetSpacing(8)
@@ -903,17 +895,13 @@ func (a *App) showSettingsDialog() {
 
 	mode := combo(dlg, "Display mode", []string{"reserved", "overlay"}, a.cfg.DockMode)
 	edge := combo(dlg, "Dock edge", []string{"bottom", "top", "left", "right"}, a.cfg.DockEdge)
-	theme := combo(dlg, "Theme", []string{"light", "night"}, a.cfg.Theme)
+	nightMode := checkbox(dlg, "Night mode", a.cfg.Theme == "night")
 	startup := checkbox(dlg, "Start LimitDock when Windows starts", native.StartupEnabled())
 	slide := checkbox(dlg, "Slide away when overlay is unpinned", a.cfg.AutoHide)
 	refresh := number(dlg, "Refresh seconds", float64(a.cfg.RefreshSeconds), 5, 600)
-	maxBands := number(dlg, "Visible rows per card", float64(a.cfg.GaugeMaxBands), 1, 4)
+	maxBands := number(dlg, "Visible rows per card (max 4)", float64(a.cfg.GaugeMaxBands), 1, 4)
 	warn := number(dlg, "Warn when used percent reaches", float64(a.cfg.GaugeWarnPercent), 1, 100)
 	crit := number(dlg, "Critical when used percent reaches", float64(a.cfg.GaugeCritPercent), 1, 100)
-	agEnabled := checkbox(dlg, "Enable Antigravity custom quota reader", a.cfg.Antigravity.Enabled)
-	subtitle := text(dlg, "Antigravity subtitle", a.cfg.Antigravity.Subtitle)
-	dataDir := text(dlg, "Antigravity cache directory or endpoint URL", a.cfg.Antigravity.DataDir)
-	binary := text(dlg, "Antigravity endpoint URL hint", a.cfg.Antigravity.BinaryPath)
 
 	buttons, _ := walk.NewComposite(dlg)
 	bl := walk.NewHBoxLayout()
@@ -925,17 +913,17 @@ func (a *App) showSettingsDialog() {
 	save.Clicked().Attach(func() {
 		a.cfg.DockMode = strings.ToLower(strings.TrimSpace(mode.Text()))
 		a.cfg.DockEdge = strings.ToLower(strings.TrimSpace(edge.Text()))
-		a.cfg.Theme = strings.ToLower(strings.TrimSpace(theme.Text()))
+		if nightMode.Checked() {
+			a.cfg.Theme = "night"
+		} else {
+			a.cfg.Theme = "light"
+		}
 		a.cfg.StartWithWindows = startup.Checked()
 		a.cfg.AutoHide = slide.Checked()
 		a.cfg.RefreshSeconds = int(refresh.Value())
 		a.cfg.GaugeMaxBands = int(maxBands.Value())
 		a.cfg.GaugeWarnPercent = int(warn.Value())
 		a.cfg.GaugeCritPercent = int(crit.Value())
-		a.cfg.Antigravity.Enabled = agEnabled.Checked()
-		a.cfg.Antigravity.Subtitle = strings.TrimSpace(subtitle.Text())
-		a.cfg.Antigravity.DataDir = strings.TrimSpace(dataDir.Text())
-		a.cfg.Antigravity.BinaryPath = strings.TrimSpace(binary.Text())
 		a.cfg.Normalize()
 		if err := settings.Save(a.paths.Settings, a.cfg); err != nil {
 			walk.MsgBox(dlg, "LimitDock", err.Error(), walk.MsgBoxIconError)

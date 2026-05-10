@@ -8,13 +8,6 @@ import (
 	"strings"
 )
 
-type Antigravity struct {
-	Enabled    bool   `json:"enabled"`
-	BinaryPath string `json:"binaryPath"`
-	DataDir    string `json:"dataDir"`
-	Subtitle   string `json:"subtitle"`
-}
-
 type Settings struct {
 	AutoHide         bool                       `json:"autoHide"`
 	DockMode         string                     `json:"dockMode"`
@@ -22,7 +15,6 @@ type Settings struct {
 	Theme            string                     `json:"theme"`
 	StartWithWindows bool                       `json:"startWithWindows"`
 	HiddenQuotaBands map[string]map[string]bool `json:"hiddenQuotaBands"`
-	Antigravity      Antigravity                `json:"antigravity"`
 	GaugeMaxBands    int                        `json:"gaugeMaxBands"`
 	GaugeWarnPercent int                        `json:"gaugeWarnPercent"`
 	GaugeCritPercent int                        `json:"gaugeCritPercent"`
@@ -37,9 +29,6 @@ func Defaults() Settings {
 		Theme:            "light",
 		StartWithWindows: false,
 		HiddenQuotaBands: map[string]map[string]bool{},
-		Antigravity: Antigravity{
-			Enabled: true,
-		},
 		GaugeMaxBands:    4,
 		GaugeWarnPercent: 72,
 		GaugeCritPercent: 90,

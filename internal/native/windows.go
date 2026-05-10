@@ -111,8 +111,8 @@ func CursorPosition() Point {
 
 func SetPopupToolWindow(hwnd uintptr) {
 	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlStyle), uintptr(styleDockBase))
-	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(exStyleDock))
-	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpFrameChanged)
+	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(exStyleDockVisible))
+	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpFrameChanged)
 }
 
 func SetTopmost(hwnd uintptr) {
@@ -128,7 +128,7 @@ func FocusTopmost(hwnd uintptr) {
 
 func SetDockBoundsVisible(hwnd uintptr, rect Rect) {
 	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlStyle), uintptr(styleDockBase|wsVisible))
-	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(exStyleDock))
+	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(exStyleDockVisible))
 	_, _, _ = procSetWindowPos.Call(
 		hwnd,
 		hwndTopmost,
@@ -136,14 +136,14 @@ func SetDockBoundsVisible(hwnd uintptr, rect Rect) {
 		uintptr(rect.Top),
 		uintptr(rect.Right-rect.Left),
 		uintptr(rect.Bottom-rect.Top),
-		swpNoActivate|swpFrameChanged|swpShowWindow,
+		swpFrameChanged|swpShowWindow,
 	)
 }
 
 func SetDockBoundsHidden(hwnd uintptr, rect Rect) {
 	_, _, _ = procShowWindow.Call(hwnd, swHide)
 	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlStyle), uintptr(styleDockBase))
-	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(exStyleDock))
+	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), uintptr(exStyleDockHidden))
 	_, _, _ = procSetWindowPos.Call(
 		hwnd,
 		hwndTopmost,
@@ -325,18 +325,19 @@ const (
 	gwlStyle   = ^uintptr(15)
 	gwlExStyle = ^uintptr(19)
 
-	wsVisible      = 0x10000000
-	wsPopup        = 0x80000000
-	wsClipSiblings = 0x04000000
-	wsClipChildren = 0x02000000
-	wsExTopmost    = 0x00000008
-	wsExToolWindow = 0x00000080
-	wsExNoActivate = 0x08000000
-	styleDockBase  = wsPopup | wsClipSiblings | wsClipChildren
-	exStyleDock    = wsExTopmost | wsExToolWindow | wsExNoActivate
-	wmNull         = 0x0000
-	swHide         = 0x0000
-	swShow         = 0x0005
+	wsVisible          = 0x10000000
+	wsPopup            = 0x80000000
+	wsClipSiblings     = 0x04000000
+	wsClipChildren     = 0x02000000
+	wsExTopmost        = 0x00000008
+	wsExToolWindow     = 0x00000080
+	wsExNoActivate     = 0x08000000
+	styleDockBase      = wsPopup | wsClipSiblings | wsClipChildren
+	exStyleDockVisible = wsExTopmost | wsExToolWindow
+	exStyleDockHidden  = wsExTopmost | wsExToolWindow | wsExNoActivate
+	wmNull             = 0x0000
+	swHide             = 0x0000
+	swShow             = 0x0005
 
 	hwndTopmost = ^uintptr(0)
 

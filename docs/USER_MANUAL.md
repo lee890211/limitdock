@@ -52,7 +52,7 @@ Right-click the tray icon:
 
 - `Hide Status Bar`: hides the dock, unregisters reserved appbar space, restores the Windows work area, disables hover reveal, and pauses refresh.
 - `Show Status Bar`: shows the dock again using saved settings.
-- `Settings`: opens LimitDock and OpenUsage settings.
+- `Settings`: opens LimitDock docking, theme, refresh, startup, and threshold settings.
 - `Exit`: closes LimitDock and stops the managed OpenUsage daemon.
 
 Hide is not persisted. A fresh launch shows the dock again.
@@ -99,7 +99,8 @@ Antigravity:
 
 - Appears only when LimitDock can read quota-like Antigravity data locally.
 - LimitDock does not show an Antigravity status-only card. It needs percent/reset or prompt-credit quota data.
-- LimitDock tries the running local language-server endpoint and common `%APPDATA%\Antigravity` cache locations automatically. Optional hints can be set in Settings through `antigravity.binaryPath` as an endpoint URL hint and `antigravity.dataDir` as a JSON cache directory or endpoint URL.
+- LimitDock tries the running local language-server endpoint and common `%APPDATA%\Antigravity` cache locations automatically.
+- There are no Antigravity settings. If no quota data is available, no Antigravity card is rendered.
 
 For the upstream provider list, see [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there should be handled through OpenUsage. Providers outside OpenUsage should be added through a LimitDock custom reader that emits the same normalized quota rows.
 

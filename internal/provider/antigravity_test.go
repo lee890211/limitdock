@@ -1,15 +1,11 @@
 package provider
 
-import (
-	"testing"
-
-	"limitdock/internal/settings"
-)
+import "testing"
 
 func TestAntigravityStatusReadModelRequiresQuota(t *testing.T) {
 	model := antigravityStatusReadModel(map[string]any{
 		"userStatus": map[string]any{"email": "user@example.com"},
-	}, settings.Defaults().Antigravity)
+	})
 	if len(model.Snapshots) != 0 {
 		t.Fatalf("expected no visible snapshot without quota metrics: %#v", model.Snapshots)
 	}
@@ -36,7 +32,7 @@ func TestAntigravityStatusReadModelBuildsQuotaSnapshot(t *testing.T) {
 			},
 		},
 	}
-	model := antigravityStatusReadModel(status, settings.Defaults().Antigravity)
+	model := antigravityStatusReadModel(status)
 	snap := model.Snapshots["antigravity-user@example.com"]
 	if snap == nil {
 		t.Fatalf("expected antigravity snapshot: %#v", model.Snapshots)
@@ -71,7 +67,7 @@ func TestAntigravityStatusReadModelFindsNestedQuota(t *testing.T) {
 			},
 		},
 	}
-	model := antigravityStatusReadModel(status, settings.Defaults().Antigravity)
+	model := antigravityStatusReadModel(status)
 	if model.Snapshots["antigravity-user@example.com"] == nil {
 		t.Fatalf("expected nested antigravity snapshot: %#v", model.Snapshots)
 	}

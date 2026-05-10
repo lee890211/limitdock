@@ -10,7 +10,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,12 +21,10 @@ import (
 	"time"
 
 	"limitdock/internal/readmodel"
-	"limitdock/internal/settings"
 )
 
 type AntigravityReader struct {
-	Config settings.Antigravity
-	Log    Logger
+	Log Logger
 }
 
 type antigravityEndpoint struct {
@@ -59,23 +56,19 @@ func (r AntigravityReader) FallbackProviderID() string {
 }
 
 func (r AntigravityReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
-	if !r.Config.Enabled {
-		return emptyReadModel(), nil
-	}
-
 	for _, status := range r.cachedStatuses() {
-		model := antigravityStatusReadModel(status, r.Config)
+		model := antigravityStatusReadModel(status)
 		if len(model.Snapshots) > 0 {
 			return model, nil
 		}
 	}
 
-	for _, endpoint := range antigravityEndpointCandidates(ctx, r.Config) {
+	for _, endpoint := range antigravityEndpointCandidates(ctx) {
 		status, err := fetchAntigravityStatus(ctx, endpoint)
 		if err != nil {
 			continue
 		}
-		model := antigravityStatusReadModel(status, r.Config)
+		model := antigravityStatusReadModel(status)
 		if len(model.Snapshots) > 0 {
 			return model, nil
 		}
@@ -88,11 +81,7 @@ func (r AntigravityReader) Read(ctx context.Context) (*readmodel.ReadModel, erro
 }
 
 func (r AntigravityReader) cachedStatuses() []map[string]any {
-	roots := []string{}
-	if root := strings.TrimSpace(r.Config.DataDir); root != "" {
-		roots = append(roots, root)
-	}
-	roots = append(roots, defaultAntigravityDataDirs()...)
+	roots := defaultAntigravityDataDirs()
 
 	out := []map[string]any{}
 	seen := map[string]bool{}
@@ -211,8 +200,8 @@ func fetchAntigravityStatus(ctx context.Context, endpoint antigravityEndpoint) (
 	return out, nil
 }
 
-func antigravityEndpointCandidates(ctx context.Context, cfg settings.Antigravity) []antigravityEndpoint {
-	cacheKey := strings.TrimSpace(cfg.BinaryPath) + "|" + strings.TrimSpace(cfg.DataDir)
+func antigravityEndpointCandidates(ctx context.Context) []antigravityEndpoint {
+	cacheKey := "auto"
 	now := time.Now()
 	antigravityEndpointCache.Lock()
 	if antigravityEndpointCache.key == cacheKey && now.Before(antigravityEndpointCache.expiresAt) {
@@ -237,11 +226,6 @@ func antigravityEndpointCandidates(ctx context.Context, cfg settings.Antigravity
 		out = append(out, antigravityEndpoint{BaseURL: baseURL, Token: token})
 	}
 
-	for _, raw := range []string{cfg.BinaryPath, cfg.DataDir} {
-		if u := configuredEndpointURL(raw); u != "" {
-			add(u, "")
-		}
-	}
 	for _, proc := range detectAntigravityProcesses(ctx) {
 		ports := []int{}
 		if proc.Port > 0 {
@@ -263,21 +247,6 @@ func antigravityEndpointCandidates(ctx context.Context, cfg settings.Antigravity
 	antigravityEndpointCache.items = copyEndpoints(out)
 	antigravityEndpointCache.Unlock()
 	return out
-}
-
-func configuredEndpointURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return ""
-	}
-	return strings.TrimRight(u.String(), "/")
 }
 
 func detectAntigravityProcesses(ctx context.Context) []antigravityProcess {
@@ -348,8 +317,8 @@ func portsForPID(ctx context.Context, pid int) []int {
 	return out
 }
 
-func antigravityStatusReadModel(status map[string]any, cfg settings.Antigravity) *readmodel.ReadModel {
-	snap := antigravitySnapshot(status, cfg)
+func antigravityStatusReadModel(status map[string]any) *readmodel.ReadModel {
+	snap := antigravitySnapshot(status)
 	if snap == nil || len(snap.Metrics) == 0 {
 		return emptyReadModel()
 	}
@@ -357,7 +326,7 @@ func antigravityStatusReadModel(status map[string]any, cfg settings.Antigravity)
 	return &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{key: snap}}
 }
 
-func antigravitySnapshot(status map[string]any, cfg settings.Antigravity) *readmodel.Snapshot {
+func antigravitySnapshot(status map[string]any) *readmodel.Snapshot {
 	user := objectAny(status, "userStatus", "user_status", "user")
 	for _, root := range statusRoots(status) {
 		if user != nil {
@@ -412,9 +381,6 @@ func antigravitySnapshot(status map[string]any, cfg settings.Antigravity) *readm
 		return nil
 	}
 	attrs := map[string]any{"source": "antigravity-local"}
-	if subtitle := strings.TrimSpace(cfg.Subtitle); subtitle != "" {
-		attrs["subtitle"] = subtitle
-	}
 	return &readmodel.Snapshot{
 		ProviderID: "antigravity",
 		AccountID:  accountID,
