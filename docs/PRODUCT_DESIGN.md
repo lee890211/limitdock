@@ -12,7 +12,7 @@ LimitDock is a working status bar, not a dashboard. Its purpose is to keep quota
 
 ## Ribbon Density
 
-Top and bottom edges use a compact ribbon around 88 to 96 Windows logical pixels tall, clamped by the current monitor work area so different screens keep a similar footprint. Provider cards are compact chips but wide enough for visible quota rows. Model labels keep the metering window when available, while the separate timing column shows reset countdown only. Extra rows remain available through the double-click row picker.
+Top and bottom edges use a compact ribbon around 88 to 96 Windows logical pixels tall, clamped by the current monitor work area so different screens keep a similar footprint. Provider cards are compact chips but wide enough for visible quota rows. Model labels keep the metering window when available, while the separate timing column shows reset countdown only. Remaining percent is drawn inside the gauge. Extra rows remain available through the double-click row picker. On wide displays, the ribbon should fit up to five provider cards.
 
 Left and right edges use a narrow vertical strip whose width is also clamped by the monitor work area. Cards stack vertically, and quota rows use one full-width row per model/window. Model labels are deliberately truncated before reset and percent are allowed to disappear.
 
@@ -24,6 +24,10 @@ The tool rail stays compact:
 - Overlay mode: settings, pin/unpin.
 
 The pin/unpin icon appears only in overlay mode because reserved mode is always fixed. Dock edge changes live in Settings so the reserved appbar is predictable.
+
+## Refresh Control
+
+The `Updated` panel is both status and action. It keeps a compact vertical label/time layout and a refresh glyph so it is recognizable as clickable. Clicking it forces a refresh immediately instead of waiting for the automatic interval.
 
 ## Overlay Versus Reserved
 

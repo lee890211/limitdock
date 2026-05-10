@@ -26,11 +26,13 @@ The ribbon is best for wide monitors. Each provider card shows:
 
 - provider name and icon
 - model or plan bucket, including the metering window when available
-- reset countdown only in the timing column
-- remaining percent
+- reset countdown with a clock icon
+- remaining percent inside the gauge
 - compact gauge
 
-When two rows are visible, they use two full-width lines. When three or four rows are visible, they switch to a compact grid.
+When two rows are visible, they use two full-width lines. When three or four rows are visible, they switch to a compact grid. On wide displays, the ribbon can fit up to five provider cards before overflowing.
+
+The `Updated` panel is clickable. Click it to force an immediate refresh even if the automatic refresh interval has not elapsed.
 
 ## Visible Row Picker
 
@@ -73,11 +75,23 @@ Dock edges:
 - `left`
 - `right`
 
-Dock mode, dock edge, theme, auto-hide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time. Themes are `light` and `night`.
+Dock mode, dock edge, theme, auto-slide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time. `Night mode` toggles between the `light` and `night` themes. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
 
 `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Clear the checkbox to remove the value. Older `LimitDock.lnk` startup shortcuts are cleaned up when this setting changes.
 
 ## Provider Behavior
+
+LimitDock uses OpenUsage as the source of truth for providers that OpenUsage supports. The current upstream list is documented in [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). LimitDock renders only quota-like rows, so usage-only or cost-only provider data may be omitted from the dock.
+
+| Provider or agent | Source | Notes |
+| --- | --- | --- |
+| Claude Code | OpenUsage | Appears when OpenUsage exposes quota-like rows. |
+| Cursor | OpenUsage | Plan-cycle quota only. |
+| GitHub Copilot | OpenUsage | Appears when chat/completion quota rows are present. |
+| Codex CLI | OpenUsage, then LimitDock fallback | OpenUsage wins. The fallback scans local Codex session rate-limit events only when OpenUsage has no Codex quota rows. |
+| Gemini CLI | OpenUsage | Model-specific rows are preferred over aggregate duplicates. |
+| OpenCode, Ollama, OpenAI, Anthropic, OpenRouter, Groq, Mistral AI, DeepSeek, Moonshot/Kimi, Perplexity, xAI/Grok, Z.AI, Google Gemini API, Alibaba Cloud | OpenUsage | Appears only when OpenUsage exposes quota-like rows in its read model. |
+| Antigravity | LimitDock custom reader | Quota-only. Requires readable local quota data from the running Antigravity language server or common `%APPDATA%\Antigravity` cache files. If Antigravity is closed or no quota row exists, no card is shown. |
 
 Codex:
 
@@ -102,7 +116,7 @@ Antigravity:
 - LimitDock tries the running local language-server endpoint and common `%APPDATA%\Antigravity` cache locations automatically.
 - There are no Antigravity settings. If no quota data is available, no Antigravity card is rendered.
 
-For the upstream provider list, see [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there should be handled through OpenUsage. Providers outside OpenUsage should be added through a LimitDock custom reader that emits the same normalized quota rows.
+Providers listed in OpenUsage should be handled through OpenUsage first. Providers outside OpenUsage should be added through a LimitDock custom reader that emits the same normalized quota rows.
 
 ## Build And Release
 

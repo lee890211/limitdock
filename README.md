@@ -19,11 +19,27 @@ LimitDock is built on [openusage](https://github.com/janekbaraniewski/openusage)
 
 Provider support follows OpenUsage's upstream provider list where possible. See [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there are handled through the `connector/openusage` reader. Providers not exposed by OpenUsage, or providers that need a local fallback when OpenUsage has no quota rows, live in `internal/provider` as custom readers that emit the same internal read model.
 
+## Provider Support
+
+LimitDock renders only quota-like rows. A provider can be detected by OpenUsage and still be absent from LimitDock if OpenUsage does not expose a quota, rate-limit, credit, or reset row for it.
+
+| Provider or agent | Source | LimitDock behavior |
+| --- | --- | --- |
+| Claude Code | OpenUsage | Rendered when OpenUsage exposes quota-like rows. |
+| Cursor | OpenUsage | Plan-cycle quota from `plan_percent_used`; reset comes from `billing_cycle_end` when present. |
+| GitHub Copilot | OpenUsage | Rendered when OpenUsage exposes chat/completion quota rows. |
+| Codex CLI | OpenUsage first, custom fallback second | OpenUsage rows win. If OpenUsage has no Codex quota rows, the local fallback scans recent Codex session rate-limit events. |
+| Gemini CLI | OpenUsage | Model-specific quota rows are preferred; aggregate duplicate rows are suppressed when precise model rows exist. |
+| OpenCode, Ollama, OpenAI, Anthropic, OpenRouter, Groq, Mistral AI, DeepSeek, Moonshot/Kimi, Perplexity, xAI/Grok, Z.AI, Google Gemini API, Alibaba Cloud | OpenUsage | Rendered only when OpenUsage exposes quota-like rows in the read model. |
+| Antigravity | LimitDock custom reader only | Quota-only and automatic. It can read the running local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. If Antigravity is closed or no quota rows are present, no card is shown. |
+
 ## User Guide
 
 ### Ribbon Mode
 
-Use `bottom` or `top` for a horizontal ribbon. Each provider card shows one or more quota rows. Row labels keep the model or plan bucket, including the metering window when openusage exposes it; the timing column shows only the reset countdown. When two rows are visible, they use two full-width lines; three or four rows use a compact grid. Long labels are shortened before reset time or remaining percent disappear.
+Use `bottom` or `top` for a horizontal ribbon. Each provider card shows one or more quota rows. Row labels keep the model or plan bucket, including the metering window when openusage exposes it; the timing column shows only the reset countdown. Remaining percent is drawn inside the gauge. When two rows are visible, they use two full-width lines; three or four rows use a compact grid. Long labels are shortened before reset time or remaining percent disappear. On wide displays, the ribbon can fit up to five provider cards before overflowing.
+
+The `Updated` panel is clickable. Click it to force an immediate refresh even if the automatic refresh interval has not elapsed.
 
 ![LimitDock top or bottom ribbon](docs/images/manual-ribbon.png)
 
@@ -57,7 +73,7 @@ LimitDock supports two display modes:
 
 Edges are `bottom`, `top`, `left`, and `right`. You can change display mode and edge from `Settings`; docking choices are stored in local `settings.json`.
 
-`Theme` in `Settings` switches between `light` and `night`. `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value.
+`Night mode` in `Settings` switches between the light and night themes. `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
 
 Antigravity support is quota-only and automatic. If OpenUsage does not expose Antigravity, LimitDock tries its custom reader and renders a card only when it can read local percent/reset or prompt-credit quota data. It does not add an installation/status placeholder card.
 
@@ -87,6 +103,8 @@ The build creates:
 - `dist\LimitDock-<version>.zip`
 
 The runtime app is Go-only. Legacy script app and probe files were removed after the migration.
+
+For docking changes, run the project smoke workflow in `.codex/skills/limitdock-smoke/SKILL.md`. Rule-based Go tests cover dock geometry, reserved work-area calculations, appbar DPI correction, five-card ribbon width, settings compatibility, quota normalization, and provider fallback merging. The smoke workflow adds live Windows checks for all edges and display modes.
 
 ## Documentation
 

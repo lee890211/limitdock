@@ -68,24 +68,22 @@ func GetWorkArea() (Rect, error) {
 	return rect, nil
 }
 
-func WindowDpiScale(hwnd uintptr) float64 {
-	monitor, _, _ := procMonitorFromWindow.Call(hwnd, monitorDefaultToNearest)
-	if monitor != 0 {
-		var dx, dy uint32
-		r1, _, _ := procGetDpiForMonitor.Call(monitor, mdTEffectiveDPI, uintptr(unsafe.Pointer(&dx)), uintptr(unsafe.Pointer(&dy)))
-		if r1 == 0 && dx >= 72 && dx <= 384 {
-			return float64(dx) / 96.0
-		}
+func SetWorkArea(rect Rect) error {
+	if err := setWorkAreaRaw(scaleRect(rect, shellScale())); err != nil {
+		return err
 	}
-	dpi, _, _ := procGetDpiForWindow.Call(hwnd)
-	if dpi >= 72 && dpi <= 384 {
-		return float64(dpi) / 96.0
+	reported, err := GetWorkArea()
+	if err != nil {
+		return nil
 	}
-	return 1.0
+	if scale := workAreaCorrectionScale(rect, reported); scale >= 0.5 && scale <= 3 && (scale < 0.95 || scale > 1.05) {
+		return setWorkAreaRaw(scaleRect(rect, scale))
+	}
+	return nil
 }
 
-func SetWorkArea(rect Rect) error {
-	r1, _, err := procSystemParametersInfo.Call(spiSetWorkArea, 0, uintptr(unsafe.Pointer(&rect)), spifSendChange)
+func setWorkAreaRaw(rect Rect) error {
+	r1, _, err := procSystemParametersInfo.Call(spiSetWorkArea, 0, uintptr(unsafe.Pointer(&rect)), 0)
 	if r1 == 0 {
 		return err
 	}
@@ -138,6 +136,8 @@ func SetDockBoundsVisible(hwnd uintptr, rect Rect) {
 		uintptr(rect.Bottom-rect.Top),
 		swpFrameChanged|swpShowWindow,
 	)
+	_, _, _ = procShowWindow.Call(hwnd, uintptr(swShow))
+	_, _, _ = procBringWindowToTop.Call(hwnd)
 }
 
 func SetDockBoundsHidden(hwnd uintptr, rect Rect) {
@@ -171,19 +171,20 @@ func RemoveAppBar(hwnd uintptr) {
 }
 
 func SetAppBar(hwnd uintptr, edge string, requested Rect) (Rect, bool) {
+	scale := shellScale()
 	data := appBarData{
 		CbSize:          uint32(unsafe.Sizeof(appBarData{})),
 		HWnd:            hwnd,
 		CallbackMessage: appbarCallback,
 		Edge:            appBarEdge(edge),
-		Rect:            requested,
+		Rect:            scaleRect(requested, scale),
 	}
 	r1, _, _ := procSHAppBarMessage.Call(abmQueryPos, uintptr(unsafe.Pointer(&data)))
 	if r1 == 0 {
 		return requested, false
 	}
-	thickW := requested.Right - requested.Left
-	thickH := requested.Bottom - requested.Top
+	thickW := data.Rect.Right - data.Rect.Left
+	thickH := data.Rect.Bottom - data.Rect.Top
 	switch strings.ToLower(edge) {
 	case "left":
 		data.Rect.Right = data.Rect.Left + thickW
@@ -195,7 +196,7 @@ func SetAppBar(hwnd uintptr, edge string, requested Rect) (Rect, bool) {
 		data.Rect.Top = data.Rect.Bottom - thickH
 	}
 	r2, _, _ := procSHAppBarMessage.Call(abmSetPos, uintptr(unsafe.Pointer(&data)))
-	return data.Rect, r2 != 0
+	return unscaleRect(data.Rect, scale), r2 != 0
 }
 
 func StartupShortcutPath() string {
@@ -269,6 +270,76 @@ func quoteCommand(path string) string {
 	return `"` + strings.ReplaceAll(path, `"`, `\"`) + `"`
 }
 
+func shellScale() float64 {
+	monitor, _, _ := procMonitorFromPoint.Call(0, monitorDefaultToPrimary)
+	if monitor == 0 {
+		return 1
+	}
+	var dx, dy uint32
+	r1, _, _ := procGetDpiForMonitor.Call(monitor, mdTEffectiveDPI, uintptr(unsafe.Pointer(&dx)), uintptr(unsafe.Pointer(&dy)))
+	if r1 == 0 && dx >= 72 && dx <= 384 {
+		return float64(dx) / 96
+	}
+	return 1
+}
+
+func scaleRect(rect Rect, scale float64) Rect {
+	if scale <= 0 {
+		scale = 1
+	}
+	return Rect{
+		Left:   int32(float64(rect.Left)*scale + 0.5),
+		Top:    int32(float64(rect.Top)*scale + 0.5),
+		Right:  int32(float64(rect.Right)*scale + 0.5),
+		Bottom: int32(float64(rect.Bottom)*scale + 0.5),
+	}
+}
+
+func unscaleRect(rect Rect, scale float64) Rect {
+	if scale <= 0 {
+		scale = 1
+	}
+	return Rect{
+		Left:   int32(float64(rect.Left)/scale + 0.5),
+		Top:    int32(float64(rect.Top)/scale + 0.5),
+		Right:  int32(float64(rect.Right)/scale + 0.5),
+		Bottom: int32(float64(rect.Bottom)/scale + 0.5),
+	}
+}
+
+func workAreaCorrectionScale(desired Rect, reported Rect) float64 {
+	var total float64
+	var count float64
+	for _, pair := range [][2]int32{
+		{desired.Left, reported.Left},
+		{desired.Top, reported.Top},
+		{desired.Right, reported.Right},
+		{desired.Bottom, reported.Bottom},
+	} {
+		want := pair[0]
+		got := pair[1]
+		if want == 0 || got == 0 {
+			continue
+		}
+		if abs32(want-got) <= 4 {
+			continue
+		}
+		total += float64(want) / float64(got)
+		count++
+	}
+	if count == 0 {
+		return 1
+	}
+	return total / count
+}
+
+func abs32(v int32) int32 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func appBarEdge(edge string) uint32 {
 	switch strings.ToLower(edge) {
 	case "left":
@@ -308,19 +379,16 @@ var (
 	procSetForegroundWindow  = user32.NewProc("SetForegroundWindow")
 	procPostMessage          = user32.NewProc("PostMessageW")
 	procShowWindow           = user32.NewProc("ShowWindow")
-	procGetDpiForWindow      = user32.NewProc("GetDpiForWindow")
-	procMonitorFromWindow    = user32.NewProc("MonitorFromWindow")
+	procMonitorFromPoint     = user32.NewProc("MonitorFromPoint")
 	procSHAppBarMessage      = shell32.NewProc("SHAppBarMessage")
 	shcore                   = windows.NewLazySystemDLL("shcore.dll")
 	procGetDpiForMonitor     = shcore.NewProc("GetDpiForMonitor")
 )
 
 const (
-	spiSetWorkArea          = 0x002F
-	spiGetWorkArea          = 0x0030
-	spifSendChange          = 0x0002
-	mdTEffectiveDPI         = 0
-	monitorDefaultToNearest = 2
+	spiSetWorkArea  = 0x002F
+	spiGetWorkArea  = 0x0030
+	mdTEffectiveDPI = 0
 
 	gwlStyle   = ^uintptr(15)
 	gwlExStyle = ^uintptr(19)
@@ -357,7 +425,8 @@ const (
 	abeRight  = 2
 	abeBottom = 3
 
-	appbarCallback = 0x8001
-	startupRunKey  = `Software\Microsoft\Windows\CurrentVersion\Run`
-	startupRunName = "LimitDock"
+	monitorDefaultToPrimary = 1
+	appbarCallback          = 0x8001
+	startupRunKey           = `Software\Microsoft\Windows\CurrentVersion\Run`
+	startupRunName          = "LimitDock"
 )
