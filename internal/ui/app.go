@@ -90,9 +90,11 @@ type App struct {
 	log     *logging.Logger
 	manager *openusage.Manager
 
-	mw      *walk.MainWindow
-	surface *walk.CustomWidget
-	notify  *walk.NotifyIcon
+	mw          *walk.MainWindow
+	surface     *walk.CustomWidget
+	notify      *walk.NotifyIcon
+	trayHide    *walk.Action
+	trayShow    *walk.Action
 
 	fontSmall *walk.Font
 	fontBold  *walk.Font
@@ -206,7 +208,7 @@ func (a *App) createWindow() error {
 	_ = layout.SetSpacing(0)
 	_ = a.mw.SetLayout(layout)
 
-	a.surface, err = walk.NewCustomWidget(a.mw, 0, a.paint)
+	a.surface, err = walk.NewCustomWidgetPixels(a.mw, 0, a.paint)
 	if err != nil {
 		return err
 	}
@@ -239,18 +241,30 @@ func (a *App) setupTray() error {
 		_ = ni.SetIcon(icon)
 	}
 	_ = ni.SetToolTip(appName)
-	a.addTrayAction(trayHideStatus, func() { a.setStatusVisible(false) })
-	a.addTrayAction(trayShowStatus, func() { a.setStatusVisible(true) })
+	a.trayHide = a.addTrayAction(trayHideStatus, func() { a.setStatusVisible(false) })
+	a.trayShow = a.addTrayAction(trayShowStatus, func() { a.setStatusVisible(true) })
 	a.addTrayAction(traySettings, func() { a.showSettingsDialog() })
 	a.addTrayAction(trayExit, func() { _ = a.mw.Close() })
+	a.refreshTrayVisibilityActions()
 	return ni.SetVisible(true)
 }
 
-func (a *App) addTrayAction(text string, fn func()) {
+func (a *App) addTrayAction(text string, fn func()) *walk.Action {
 	action := walk.NewAction()
 	_ = action.SetText(text)
 	action.Triggered().Attach(fn)
 	_ = a.notify.ContextMenu().Actions().Add(action)
+	return action
+}
+
+func (a *App) refreshTrayVisibilityActions() {
+	visible := a.isVisible()
+	if a.trayHide != nil {
+		_ = a.trayHide.SetVisible(visible)
+	}
+	if a.trayShow != nil {
+		_ = a.trayShow.SetVisible(!visible)
+	}
 }
 
 func (a *App) bootstrapOpenUsage(noDownload bool) {
@@ -910,6 +924,7 @@ func (a *App) setStatusVisible(visible bool) {
 		a.mw.Hide()
 		native.SetDockBoundsHidden(uintptr(a.mw.Handle()), rect)
 	}
+	a.refreshTrayVisibilityActions()
 }
 
 func (a *App) revealSideDock(rect native.Rect) {
@@ -1367,7 +1382,7 @@ func (a *App) loadBitmap(name string) *walk.Bitmap {
 	if _, err := os.Stat(path); err != nil {
 		return nil
 	}
-	img, err := walk.NewBitmapFromFile(path)
+	img, err := walk.NewBitmapFromFileForDPI(path, 96)
 	if err == nil {
 		a.images[base] = img
 		return img
@@ -1770,14 +1785,6 @@ func openFile(path string) error {
 
 func openFolder(path string) error {
 	return exec.Command("explorer.exe", path).Start()
-}
-
-func text(parent walk.Container, label, value string) *walk.TextEdit {
-	addLabel(parent, label)
-	t, _ := walk.NewTextEdit(parent)
-	t.SetCompactHeight(true)
-	_ = t.SetText(value)
-	return t
 }
 
 func addLabel(parent walk.Container, text string) {

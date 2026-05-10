@@ -251,7 +251,7 @@ func fetchAntigravityStatus(ctx context.Context, endpoint antigravityEndpoint) (
 	if lastErr != nil {
 		return nil, lastErr
 	}
-	return nil, fmt.Errorf("Antigravity endpoint returned no quota model configs")
+	return nil, fmt.Errorf("antigravity endpoint returned no quota model configs")
 }
 
 func probeAntigravityEndpoint(ctx context.Context, endpoint antigravityEndpoint) error {
@@ -318,7 +318,7 @@ func callAntigravityRPC(ctx context.Context, endpoint antigravityEndpoint, metho
 		if method == "GetUnleashData" {
 			return map[string]any{}, nil
 		}
-		return nil, fmt.Errorf("Antigravity %s %s", method, resp.Status)
+		return nil, fmt.Errorf("antigravity %s %s", method, resp.Status)
 	}
 	var out map[string]any
 	if len(strings.TrimSpace(string(respRaw))) == 0 {
