@@ -5,9 +5,10 @@ LimitDock is a native Windows companion for OpenUsage.sh quota telemetry. It exi
 Current architecture:
 
 - Use the official OpenUsage.sh Windows binary when available, downloading it on first run when it is not bundled.
-- Read OpenUsage's local read-model socket directly from the Go app.
 - Start and stop the OpenUsage telemetry daemon with the LimitDock session.
-- Read the daemon read model through the local socket endpoint.
+- Read provider data through a single Go provider aggregator.
+- Use OpenUsage's local read-model socket for upstream-supported providers.
+- Use custom quota-only readers for providers outside OpenUsage, starting with Antigravity.
 - Normalize quota-like rows into compact provider cards.
 - Render top, bottom, left, or right docks in overlay or reserved mode.
 

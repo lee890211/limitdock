@@ -316,11 +316,17 @@ const (
 	gwlStyle   = ^uintptr(15)
 	gwlExStyle = ^uintptr(19)
 
-	styleDockBase = 0x06010000
-	exStyleDock   = 0x00090008
-	wsVisible     = 0x10000000
-	wmNull        = 0x0000
-	swHide        = 0x0000
+	wsVisible      = 0x10000000
+	wsPopup        = 0x80000000
+	wsClipSiblings = 0x04000000
+	wsClipChildren = 0x02000000
+	wsExTopmost    = 0x00000008
+	wsExToolWindow = 0x00000080
+	wsExNoActivate = 0x08000000
+	styleDockBase  = wsPopup | wsClipSiblings | wsClipChildren
+	exStyleDock    = wsExTopmost | wsExToolWindow | wsExNoActivate
+	wmNull         = 0x0000
+	swHide         = 0x0000
 
 	hwndTopmost = ^uintptr(0)
 

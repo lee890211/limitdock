@@ -16,9 +16,13 @@ The runtime app does not invoke external shell scripts. Startup registration, do
 
 OpenUsage.sh owns provider discovery and telemetry. LimitDock does not parse vendor databases directly for quota.
 
-## Read-Model Adapter
+## Provider Readers
 
-`internal/readmodel` reads `/v1/read-model` from the OpenUsage daemon socket directly from the Go app. `internal/quota` merges snapshots into provider cards.
+`internal/provider` is the single read boundary for quota sources. The UI asks the provider `Aggregator` for one `readmodel.ReadModel`; it does not know whether a snapshot came from OpenUsage or a LimitDock custom reader.
+
+- `OpenUsageReader` reads `/v1/read-model` from the OpenUsage daemon socket and keeps the Codex supplemental merge behind that adapter.
+- Custom readers emit the same `readmodel.Snapshot` and `readmodel.Metric` shape, so `internal/quota` can normalize all providers through one path.
+- Duplicate snapshot keys keep the first reader's data. OpenUsage is registered first so upstream support wins over local custom fallback data.
 
 Quota normalization is intentionally narrow:
 
@@ -34,6 +38,8 @@ Throughput, spend, request, token, and cost metrics are filtered before renderin
 
 Codex:
 
+- Codex needs integration setup because local Codex telemetry is delivered through an OpenUsage notify hook and a `codex-cli` OpenUsage account/link.
+- Codex also needs a supplemental read because OpenUsage's default read model can omit quota rows unless Codex is queried with its account/provider filter and configured time window.
 - Keep `rate_limit_codex_bengalfox_*` rows.
 - Prefer `attributes.rate_limit_codex_bengalfox_name` or matching raw name fields for labels such as `GPT-5.3-Codex-Spark`.
 
@@ -49,8 +55,9 @@ Cursor:
 
 Antigravity:
 
-- Antigravity appears as quota only if OpenUsage exposes it as a provider or quota-like snapshot.
-- Custom readers for providers outside OpenUsage should emit the same internal read/card shape as the OpenUsage adapter.
+- Antigravity is handled as a quota-only custom reader when OpenUsage does not expose it.
+- The custom reader looks for local Antigravity language-server status or explicit JSON cache hints and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
+- If no quota rows are available, Antigravity is not rendered as a status-only card.
 
 ## Settings
 

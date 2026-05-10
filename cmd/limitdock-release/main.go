@@ -48,6 +48,9 @@ func main() {
 	for _, name := range []string{"README.md", "NOTES.md", "settings.example.json"} {
 		must(copyFile(filepath.Join(root, name), filepath.Join(releaseDir, name)))
 	}
+	for _, name := range []string{"ARCHITECTURE.md", "EXE_PACKAGING.md", "PRODUCT_DESIGN.md", "USER_MANUAL.md"} {
+		must(copyFile(filepath.Join(root, "docs", name), filepath.Join(releaseDir, "docs", name)))
+	}
 	must(copyFile(filepath.Join(root, "cmd", "limitdock", "LimitDock.exe.manifest"), filepath.Join(releaseDir, "LimitDock.exe.manifest")))
 
 	if *includeOpenUsage && !*skipOpenUsage {

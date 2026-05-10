@@ -96,10 +96,11 @@ Gemini:
 
 Antigravity:
 
-- Appears as quota only when OpenUsage exposes it as a provider or quota-like snapshot.
-- Manual path hints can be set in Settings through `antigravity.binaryPath`, `antigravity.dataDir`, and `antigravity.subtitle`.
+- Appears only when LimitDock can read quota-like Antigravity data locally.
+- LimitDock does not show an Antigravity status-only card. It needs percent/reset or prompt-credit quota data.
+- Optional hints can be set in Settings through `antigravity.binaryPath` as an endpoint URL hint and `antigravity.dataDir` as a JSON cache directory or endpoint URL.
 
-For the upstream provider list, see [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers outside OpenUsage should be added through a LimitDock reader that emits the same normalized card rows.
+For the upstream provider list, see [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there should be handled through OpenUsage. Providers outside OpenUsage should be added through a LimitDock custom reader that emits the same normalized quota rows.
 
 ## Build And Release
 

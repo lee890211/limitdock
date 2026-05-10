@@ -16,6 +16,7 @@ import (
 	"limitdock/internal/native"
 	"limitdock/internal/openusage"
 	"limitdock/internal/paths"
+	"limitdock/internal/provider"
 	"limitdock/internal/quota"
 	"limitdock/internal/readmodel"
 	"limitdock/internal/settings"
@@ -32,15 +33,12 @@ type App struct {
 	log     *logging.Logger
 	manager *openusage.Manager
 
-	mw          *walk.MainWindow
-	surface     *walk.CustomWidget
-	statusLabel *walk.Label
-	notify      *walk.NotifyIcon
+	mw      *walk.MainWindow
+	surface *walk.CustomWidget
+	notify  *walk.NotifyIcon
 
 	fontSmall *walk.Font
-	fontText  *walk.Font
 	fontBold  *walk.Font
-	fontMain  *walk.Font
 	fontIcon  *walk.Font
 	images    map[string]*walk.Bitmap
 
@@ -53,7 +51,6 @@ type App struct {
 	visible     bool
 	appbar      bool
 	baseWork    *native.Rect
-	workScale   float64
 	cardHits    []cardHit
 	gearHit     walk.Rectangle
 	pinHit      walk.Rectangle
@@ -120,10 +117,8 @@ func Run(p paths.Paths, opts Options) error {
 func (a *App) createWindow() error {
 	var err error
 	a.fontSmall, _ = walk.NewFont("Segoe UI", 8, 0)
-	a.fontText, _ = walk.NewFont("Segoe UI", 9, 0)
 	a.fontBold, _ = walk.NewFont("Segoe UI", 9, walk.FontBold)
-	a.fontMain, _ = walk.NewFont("Segoe UI", 13, walk.FontBold)
-	a.fontIcon, _ = walk.NewFont("Segoe UI Symbol", 13, walk.FontBold)
+	a.fontIcon, _ = walk.NewFont("Segoe MDL2 Assets", 14, 0)
 
 	a.mw, err = walk.NewMainWindow()
 	if err != nil {
@@ -134,7 +129,7 @@ func (a *App) createWindow() error {
 	if brush, err := walk.NewSolidColorBrush(themeBar); err == nil {
 		a.mw.SetBackground(brush)
 	}
-	if icon := a.loadBitmap("Codex.png"); icon != nil {
+	if icon := a.loadBitmap("LimitDock.png"); icon != nil {
 		_ = a.mw.SetIcon(icon)
 	}
 	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
@@ -154,25 +149,11 @@ func (a *App) createWindow() error {
 	if err != nil {
 		return err
 	}
-	a.surface.SetClearsBackground(false)
+	a.surface.SetClearsBackground(true)
 	a.surface.SetInvalidatesOnResize(true)
 	_ = a.surface.SetAlwaysConsumeSpace(true)
 	a.surface.MouseDown().Attach(a.handleMouseDown)
 	_ = layout.SetStretchFactor(a.surface, 1)
-
-	a.statusLabel, err = walk.NewLabel(a.mw)
-	if err != nil {
-		return err
-	}
-	_ = a.statusLabel.SetText(ribbonStatusText(a.status))
-	a.statusLabel.SetFont(a.fontBold)
-	a.statusLabel.SetTextColor(themeAccent)
-	_ = a.statusLabel.SetTextAlignment(walk.AlignCenter)
-	_ = a.statusLabel.SetEllipsisMode(walk.EllipsisEnd)
-	_ = a.statusLabel.SetMinMaxSizePixels(walk.Size{Width: 158}, walk.Size{Width: 158})
-	if bg, err := walk.NewSolidColorBrush(themeStatusBack); err == nil {
-		a.statusLabel.SetBackground(bg)
-	}
 
 	a.applyDock()
 	if !(a.cfg.DockMode == "overlay" && a.cfg.AutoHide && isSide(a.cfg.DockEdge)) {
@@ -190,7 +171,7 @@ func (a *App) setupTray() error {
 		return err
 	}
 	a.notify = ni
-	if icon := a.loadBitmap("Codex.png"); icon != nil {
+	if icon := a.loadBitmap("LimitDock.png"); icon != nil {
 		_ = ni.SetIcon(icon)
 	}
 	_ = ni.SetToolTip("LimitDock")
@@ -215,6 +196,7 @@ func (a *App) bootstrapOpenUsage(noDownload bool) {
 		a.setStatus("OpenUsage unavailable")
 		return
 	}
+	a.manager.EnsureCodexIntegration(a.ctx)
 	if err := a.manager.Start(); err != nil {
 		a.log.Printf("Failed to launch daemon process: %v", err)
 		a.setStatus("Waiting for OpenUsage")
@@ -246,8 +228,7 @@ func (a *App) refreshOnce() {
 	if !a.isVisible() {
 		return
 	}
-	client := readmodel.Client{SocketPath: a.paths.SocketPath}
-	model, err := readmodel.FetchMerged(a.ctx, client, readmodel.OpenUsageSettingsPath(), a.log)
+	model, err := provider.Aggregator{Readers: a.providerReaders(), Log: a.log}.Read(a.ctx)
 	if err != nil {
 		a.log.Printf("Refresh failed: %v", err)
 		a.setStatus("Waiting for OpenUsage")
@@ -258,6 +239,23 @@ func (a *App) refreshOnce() {
 	a.cards = cards
 	a.mu.Unlock()
 	a.setStatus("Updated " + time.Now().Format("15:04:05"))
+}
+
+func (a *App) providerReaders() []provider.Reader {
+	readers := []provider.Reader{
+		provider.OpenUsageReader{
+			Client:       readmodel.Client{SocketPath: a.paths.SocketPath},
+			SettingsPath: provider.OpenUsageSettingsPath(),
+			Log:          a.log,
+		},
+	}
+	if a.cfg.Antigravity.Enabled {
+		readers = append(readers, provider.AntigravityReader{
+			Config: a.cfg.Antigravity,
+			Log:    a.log,
+		})
+	}
+	return readers
 }
 
 func (a *App) paint(canvas *walk.Canvas, update walk.Rectangle) error {
@@ -276,12 +274,12 @@ func (a *App) paint(canvas *walk.Canvas, update walk.Rectangle) error {
 	if side {
 		a.paintSide(canvas, bounds, cards, status)
 	} else {
-		a.paintRibbon(canvas, bounds, cards)
+		a.paintRibbon(canvas, bounds, cards, status)
 	}
 	return nil
 }
 
-func (a *App) paintRibbon(canvas *walk.Canvas, bounds walk.Rectangle, cards []quota.Card) {
+func (a *App) paintRibbon(canvas *walk.Canvas, bounds walk.Rectangle, cards []quota.Card, status string) {
 	padX := 8
 	padTop := 6
 	cardH := min(82, max(52, bounds.Height-11))
@@ -289,7 +287,14 @@ func (a *App) paintRibbon(canvas *walk.Canvas, bounds walk.Rectangle, cards []qu
 	a.paintRibbonRail(canvas, rail)
 
 	x := rail.Right() + 6
+	statusRect := ribbonStatusRect(bounds, padTop, cardH)
+	if statusRect.Width > 0 {
+		a.paintRibbonStatus(canvas, statusRect, status)
+	}
 	right := bounds.Width - 4
+	if statusRect.Width > 0 {
+		right = statusRect.X - 6
+	}
 	if len(cards) == 0 {
 		a.paintRibbonWaiting(canvas, walk.Rectangle{X: x, Y: padTop, Width: max(340, right-x), Height: cardH})
 		return
@@ -307,18 +312,27 @@ func (a *App) paintRibbon(canvas *walk.Canvas, bounds walk.Rectangle, cards []qu
 	}
 }
 
+func ribbonStatusRect(bounds walk.Rectangle, top, height int) walk.Rectangle {
+	if bounds.Width < 760 {
+		return walk.Rectangle{}
+	}
+	width := 150
+	rightPad := 8
+	return walk.Rectangle{X: bounds.Width - width - rightPad, Y: top, Width: width, Height: height}
+}
+
 func (a *App) paintRibbonRail(canvas *walk.Canvas, rect walk.Rectangle) {
 	bg := brush(themeStatusBack)
 	defer bg.Dispose()
 	canvas.FillRectanglePixels(bg, rect)
 	a.gearHit = walk.Rectangle{X: rect.X + 2, Y: rect.Y + 4, Width: 28, Height: 28}
 	a.pinHit = walk.Rectangle{X: rect.X + 2, Y: rect.Y + 36, Width: 28, Height: 28}
-	a.paintRibbonTool(canvas, a.gearHit, "\u2699", themeMuted)
+	a.paintRibbonTool(canvas, a.gearHit, "\uE713", themeMuted)
 	if a.cfg.DockMode == "overlay" {
 		if a.cfg.AutoHide {
-			a.paintRibbonTool(canvas, a.pinHit, "\U0001F50C", themeFore)
+			a.paintRibbonTool(canvas, a.pinHit, "\uE77A", themeFore)
 		} else {
-			a.paintRibbonTool(canvas, a.pinHit, "\U0001F4CC", themeAccent)
+			a.paintRibbonTool(canvas, a.pinHit, "\uE718", themeAccent)
 		}
 	} else {
 		a.pinHit = walk.Rectangle{}
@@ -335,6 +349,13 @@ func (a *App) paintRibbonWaiting(canvas *walk.Canvas, rect walk.Rectangle) {
 	canvas.FillRectanglePixels(bg, rect)
 	canvas.DrawTextPixels("LimitDock waiting for OpenUsage", a.fontBold, themeFore, inset(rect, 10, 6), walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextEndEllipsis)
 	canvas.DrawTextPixels("Quota rows appear after telemetry refresh", a.fontSmall, themeMuted, walk.Rectangle{X: rect.X + 10, Y: rect.Y + 30, Width: rect.Width - 20, Height: 20}, walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextEndEllipsis)
+}
+
+func (a *App) paintRibbonStatus(canvas *walk.Canvas, rect walk.Rectangle, status string) {
+	bg := brush(themeStatusBack)
+	defer bg.Dispose()
+	canvas.FillRectanglePixels(bg, rect)
+	canvas.DrawTextPixels(ribbonStatusText(status), a.fontBold, themeAccent, inset(rect, 8, 0), walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
 }
 
 func (a *App) paintRibbonCard(canvas *walk.Canvas, rect walk.Rectangle, card quota.Card) {
@@ -441,9 +462,13 @@ func (a *App) paintSide(canvas *walk.Canvas, bounds walk.Rectangle, cards []quot
 	canvas.FillRectanglePixels(topBrush, top)
 	a.gearHit = walk.Rectangle{X: 10, Y: 8, Width: 28, Height: 26}
 	a.pinHit = walk.Rectangle{X: 44, Y: 8, Width: 28, Height: 26}
-	a.paintSideTool(canvas, a.gearHit, "\u2699")
+	a.paintSideTool(canvas, a.gearHit, "\uE713")
 	if a.cfg.DockMode == "overlay" {
-		a.paintSideTool(canvas, a.pinHit, "\U0001F50C")
+		if a.cfg.AutoHide {
+			a.paintSideTool(canvas, a.pinHit, "\uE77A")
+		} else {
+			a.paintSideTool(canvas, a.pinHit, "\uE718")
+		}
 	} else {
 		a.pinHit = walk.Rectangle{}
 	}
@@ -567,106 +592,6 @@ func (a *App) gaugeFillColor(remaining float64) walk.Color {
 	return themeGaugeOk
 }
 
-func (a *App) paintRail(canvas *walk.Canvas, rect walk.Rectangle, horizontal bool) {
-	bg := brush(themePanel)
-	defer bg.Dispose()
-	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 8, Height: 8})
-
-	if horizontal {
-		a.gearHit = walk.Rectangle{X: rect.X + 8, Y: rect.Y + 7, Width: 28, Height: 28}
-		a.pinHit = walk.Rectangle{X: a.gearHit.Right() + 7, Y: rect.Y + 7, Width: 28, Height: 28}
-	} else {
-		a.gearHit = walk.Rectangle{X: rect.X + 15, Y: rect.Y + 8, Width: 28, Height: 26}
-		a.pinHit = walk.Rectangle{X: rect.X + 15, Y: a.gearHit.Bottom() + 6, Width: 28, Height: 26}
-	}
-	a.paintIconButton(canvas, a.gearHit, "⚙")
-	if a.cfg.DockMode == "overlay" {
-		if a.cfg.AutoHide {
-			a.paintIconButton(canvas, a.pinHit, "▣")
-		} else {
-			a.paintIconButton(canvas, a.pinHit, "▤")
-		}
-	} else {
-		a.pinHit = walk.Rectangle{}
-	}
-}
-
-func (a *App) paintIconButton(canvas *walk.Canvas, rect walk.Rectangle, text string) {
-	bg := brush(themeStatusBack)
-	defer bg.Dispose()
-	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 6, Height: 6})
-	canvas.DrawTextPixels(text, a.fontIcon, themeFore, rect, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine)
-}
-
-func (a *App) paintStatus(canvas *walk.Canvas, rect walk.Rectangle, status string) {
-	bg := brush(themeStatusBack)
-	defer bg.Dispose()
-	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 7, Height: 7})
-	canvas.DrawTextPixels(status, a.fontBold, themeAccent, rect, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
-}
-
-func (a *App) paintWaiting(canvas *walk.Canvas, rect walk.Rectangle) {
-	bg := brush(themeWarnBack)
-	defer bg.Dispose()
-	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 7, Height: 7})
-	canvas.DrawTextPixels("LimitDock waiting for OpenUsage", a.fontBold, themeWarnFore, inset(rect, 10, 6), walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextEndEllipsis)
-	canvas.DrawTextPixels("Quota rows appear after telemetry refresh", a.fontSmall, themeMuted, walk.Rectangle{X: rect.X + 10, Y: rect.Y + 30, Width: rect.Width - 20, Height: 20}, walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextEndEllipsis)
-}
-
-func (a *App) paintCard(canvas *walk.Canvas, rect walk.Rectangle, card quota.Card, side bool) {
-	bg := brush(levelColor(card.Level))
-	defer bg.Dispose()
-	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 7, Height: 7})
-
-	x := rect.X + 9
-	y := rect.Y + 7
-	if img := a.loadBitmap(card.Name + ".png"); img != nil {
-		canvas.DrawImageStretchedPixels(img, walk.Rectangle{X: x, Y: y + 1, Width: 20, Height: 20})
-		x += 26
-	}
-	titleW := rect.Width - (x - rect.X) - 74
-	canvas.DrawTextPixels(card.Name, a.fontBold, themeFore, walk.Rectangle{X: x, Y: y, Width: titleW, Height: 20}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
-	canvas.DrawTextPixels(card.Main, a.fontMain, themeAccent, walk.Rectangle{X: rect.Right() - 72, Y: y - 2, Width: 62, Height: 24}, walk.TextRight|walk.TextVCenter|walk.TextSingleLine)
-
-	rowY := y + 25
-	rowH := 16
-	maxRows := 2
-	if side {
-		maxRows = 3
-	}
-	for i, band := range card.Bands {
-		if i >= maxRows || rowY+rowH > rect.Bottom()-5 {
-			break
-		}
-		captionW := rect.Width - 102
-		canvas.DrawTextPixels(band.Caption, a.fontSmall, themeFore, walk.Rectangle{X: rect.X + 10, Y: rowY, Width: captionW, Height: rowH}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
-		gauge := walk.Rectangle{X: rect.Right() - 82, Y: rowY + 4, Width: 42, Height: 7}
-		a.paintGauge(canvas, gauge, band.Percent)
-		pct := ""
-		if band.Percent != nil {
-			pct = fmt.Sprintf("%.0f%%", *band.Percent)
-		}
-		canvas.DrawTextPixels(pct, a.fontSmall, themeMuted, walk.Rectangle{X: rect.Right() - 37, Y: rowY - 1, Width: 28, Height: rowH}, walk.TextRight|walk.TextVCenter|walk.TextSingleLine)
-		rowY += rowH + 2
-	}
-}
-
-func (a *App) paintGauge(canvas *walk.Canvas, rect walk.Rectangle, pct *float64) {
-	track := brush(walk.RGB(69, 75, 83))
-	defer track.Dispose()
-	canvas.FillRoundedRectanglePixels(track, rect, walk.Size{Width: 4, Height: 4})
-	if pct == nil {
-		return
-	}
-	w := int(float64(rect.Width) * *pct / 100.0)
-	if w < 1 && *pct > 0 {
-		w = 1
-	}
-	fill := brush(themeAccent)
-	defer fill.Dispose()
-	canvas.FillRoundedRectanglePixels(fill, walk.Rectangle{X: rect.X, Y: rect.Y, Width: w, Height: rect.Height}, walk.Size{Width: 4, Height: 4})
-}
-
 func (a *App) handleMouseDown(x, y int, button walk.MouseButton) {
 	if button != walk.LeftButton {
 		return
@@ -703,7 +628,6 @@ func (a *App) applyDock() {
 	}
 	a.unregisterAppBar()
 	native.SetPopupToolWindow(uintptr(a.mw.Handle()))
-	a.syncRibbonStatusLabel()
 	full := native.PrimaryBounds()
 	work, err := native.GetWorkArea()
 	if err != nil {
@@ -727,7 +651,6 @@ func (a *App) applyDock() {
 				}
 			}
 		}
-		a.workScale = workScale
 		work := work
 		switch a.cfg.DockEdge {
 		case "top":
@@ -751,12 +674,15 @@ func (a *App) applyDock() {
 		a.revealed = false
 		a.invalidate()
 		return
-	} else if a.cfg.AutoHide {
+	}
+	hiddenHorizontal := false
+	if a.cfg.AutoHide {
 		rect = dockRect(full, work, a.cfg.DockEdge, isSide(a.cfg.DockEdge), true)
+		hiddenHorizontal = true
 	}
 	_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
 	native.SetDockBoundsVisible(uintptr(a.mw.Handle()), rect)
-	a.revealed = true
+	a.revealed = !hiddenHorizontal
 	a.invalidate()
 }
 
@@ -770,7 +696,6 @@ func (a *App) unregisterAppBar() (native.Rect, bool) {
 			a.log.Printf("Reserved workarea restored rect=(%d,%d,%d,%d)", base.Left, base.Top, base.Right, base.Bottom)
 		}
 		a.baseWork = nil
-		a.workScale = 1
 		return base, true
 	}
 	return native.Rect{}, false
@@ -781,21 +706,6 @@ func (a *App) removeAppBarRegistration() {
 		native.RemoveAppBar(uintptr(a.mw.Handle()))
 		a.appbar = false
 	}
-}
-
-func (a *App) syncRibbonStatusLabel() {
-	if a.statusLabel == nil || a.statusLabel.IsDisposed() {
-		return
-	}
-	visible := !isSide(a.cfg.DockEdge)
-	a.statusLabel.SetVisible(visible)
-	if !visible {
-		return
-	}
-	a.mu.Lock()
-	status := a.status
-	a.mu.Unlock()
-	_ = a.statusLabel.SetText(ribbonStatusText(status))
 }
 
 func (a *App) setStatusVisible(visible bool) {
@@ -878,13 +788,45 @@ func (a *App) hoverLoop() {
 				}
 				continue
 			}
-			a.mw.Synchronize(func() {
-				rect := dockRect(full, work, a.cfg.DockEdge, false, !near)
-				_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
-			})
+			rect := dockRect(full, work, a.cfg.DockEdge, false, false)
+			if a.revealed {
+				extended := horizontalRevealRect(rect, a.cfg.DockEdge, full)
+				if contains(extended, walk.Point{X: int(pos.X), Y: int(pos.Y)}) {
+					continue
+				}
+				a.mw.Synchronize(func() {
+					hidden := dockRect(full, work, a.cfg.DockEdge, false, true)
+					_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(hidden.Left), Y: int(hidden.Top), Width: int(hidden.Right - hidden.Left), Height: int(hidden.Bottom - hidden.Top)})
+				})
+				a.revealed = false
+				native.WakeWindow(uintptr(a.mw.Handle()))
+				continue
+			}
+			if near {
+				a.mw.Synchronize(func() {
+					_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
+				})
+				a.revealed = true
+				a.invalidate()
+			}
 			native.WakeWindow(uintptr(a.mw.Handle()))
 		}
 	}
+}
+
+func horizontalRevealRect(rect native.Rect, edge string, full native.Rect) walk.Rectangle {
+	margin := 10
+	out := walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)}
+	out.X -= margin
+	out.Width += margin * 2
+	if edge == "top" {
+		out.Y = int(full.Top)
+		out.Height = int(rect.Bottom-full.Top) + margin
+		return out
+	}
+	out.Y -= margin
+	out.Height = int(full.Bottom) - out.Y
+	return out
 }
 
 func (a *App) showBandPicker(card quota.Card) {
@@ -963,10 +905,10 @@ func (a *App) showSettingsDialog() {
 	maxBands := number(dlg, "Visible rows per card", float64(a.cfg.GaugeMaxBands), 1, 4)
 	warn := number(dlg, "Warn when used percent reaches", float64(a.cfg.GaugeWarnPercent), 1, 100)
 	crit := number(dlg, "Critical when used percent reaches", float64(a.cfg.GaugeCritPercent), 1, 100)
-	agEnabled := checkbox(dlg, "Enable Antigravity local footprint settings", a.cfg.Antigravity.Enabled)
+	agEnabled := checkbox(dlg, "Enable Antigravity custom quota reader", a.cfg.Antigravity.Enabled)
 	subtitle := text(dlg, "Antigravity subtitle", a.cfg.Antigravity.Subtitle)
-	dataDir := text(dlg, "Override Antigravity / Gemini workspace path", a.cfg.Antigravity.DataDir)
-	binary := text(dlg, "Override Gemini Antigravity binary", a.cfg.Antigravity.BinaryPath)
+	dataDir := text(dlg, "Antigravity cache directory or endpoint URL", a.cfg.Antigravity.DataDir)
+	binary := text(dlg, "Antigravity endpoint URL hint", a.cfg.Antigravity.BinaryPath)
 
 	buttons, _ := walk.NewComposite(dlg)
 	bl := walk.NewHBoxLayout()
@@ -1023,7 +965,7 @@ func (a *App) cleanup() {
 	for _, img := range a.images {
 		img.Dispose()
 	}
-	for _, f := range []*walk.Font{a.fontSmall, a.fontText, a.fontBold, a.fontMain, a.fontIcon} {
+	for _, f := range []*walk.Font{a.fontSmall, a.fontBold, a.fontIcon} {
 		if f != nil {
 			f.Dispose()
 		}
@@ -1034,19 +976,7 @@ func (a *App) setStatus(text string) {
 	a.mu.Lock()
 	a.status = text
 	a.mu.Unlock()
-	a.updateRibbonStatusLabel(text)
 	a.invalidate()
-}
-
-func (a *App) updateRibbonStatusLabel(text string) {
-	if a.mw == nil || a.mw.IsDisposed() || a.statusLabel == nil || a.statusLabel.IsDisposed() {
-		return
-	}
-	a.mw.Synchronize(func() {
-		if a.statusLabel != nil && !a.statusLabel.IsDisposed() && !isSide(a.cfg.DockEdge) {
-			_ = a.statusLabel.SetText(ribbonStatusText(text))
-		}
-	})
 }
 
 func (a *App) invalidate() {
@@ -1304,7 +1234,6 @@ func isSide(edge string) bool {
 
 var (
 	themeBar          = walk.RGB(243, 243, 243)
-	themePanel        = walk.RGB(243, 243, 243)
 	themeFore         = walk.RGB(32, 32, 32)
 	themeMuted        = walk.RGB(96, 96, 96)
 	themeAccent       = walk.RGB(0, 99, 177)

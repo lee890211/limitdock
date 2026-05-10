@@ -10,13 +10,14 @@ LimitDock is a compact Windows desktop dock that shows remaining agent quota at 
 - Codex rate-limit rows, including Spark labels exposed by openusage attributes.
 - Cursor plan-cycle quota from `plan_percent_used` with `billing_cycle_end` reset text.
 - Gemini model-specific quota rows, while suppressing aggregate duplicates when precise model rows exist.
+- Antigravity quota rows from the LimitDock custom reader when local quota-like data is available.
 - Exhausted or 0 percent rows, unless the user explicitly hides them.
 
 LimitDock intentionally does not show spend, token totals, request counts, tool-call counts, or generic activity rows.
 
 LimitDock is built on [openusage](https://github.com/janekbaraniewski/openusage). It is not a replacement for openusage: provider discovery, telemetry, and the read model belong there. LimitDock supervises the openusage daemon, reads its local read-model endpoint, normalizes quota-like rows, and renders them as a native Windows dock. Many thanks to the openusage maintainers for building the local usage/quota foundation this project depends on.
 
-Provider support follows OpenUsage's upstream provider list where possible. See [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers not exposed by OpenUsage can be added in LimitDock through Go reader adapters that emit the same internal card model.
+Provider support follows OpenUsage's upstream provider list where possible. See [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there are handled through OpenUsage. Providers not exposed by OpenUsage can be added in LimitDock through Go reader adapters that emit the same internal read model.
 
 ## User Guide
 
@@ -57,6 +58,8 @@ LimitDock supports two display modes:
 Edges are `bottom`, `top`, `left`, and `right`. You can change display mode and edge from `Settings`; docking choices are stored in local `settings.json`.
 
 `Start LimitDock when Windows starts` is also in `Settings`. It writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value.
+
+Antigravity support is quota-only. If OpenUsage does not expose Antigravity, LimitDock tries its custom reader and renders a card only when it can read local percent/reset or prompt-credit quota data. It does not add an installation/status placeholder card.
 
 ## Install
 

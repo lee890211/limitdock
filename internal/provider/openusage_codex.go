@@ -1,4 +1,4 @@
-package readmodel
+package provider
 
 import (
 	"context"
@@ -7,21 +7,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"limitdock/internal/readmodel"
 )
 
-type Logger interface {
-	Printf(format string, args ...any)
-}
-
-func FetchMerged(ctx context.Context, client Client, openUsageSettingsPath string, log Logger) (*ReadModel, error) {
+func fetchOpenUsageMerged(ctx context.Context, client readmodel.Client, settingsPath string, log Logger) (*readmodel.ReadModel, error) {
 	primary, _, err := client.Read(ctx, map[string]any{})
 	if err != nil {
 		return nil, err
 	}
-	if !NeedsCodexSupplement(primary.Snapshots) {
+	if !needsCodexSupplement(primary.Snapshots) {
 		return primary, nil
 	}
-	tw := OpenUsageTimeWindow(openUsageSettingsPath)
+	tw := OpenUsageSettingsTimeWindow(settingsPath)
 	supplement, _, err := client.Read(ctx, map[string]any{
 		"time_window": tw,
 		"accounts": []map[string]string{
@@ -34,11 +32,11 @@ func FetchMerged(ctx context.Context, client Client, openUsageSettingsPath strin
 		}
 		return primary, nil
 	}
-	primary.Snapshots = MergeSnapshots(primary.Snapshots, supplement.Snapshots, log)
+	primary.Snapshots = mergeCodexSnapshots(primary.Snapshots, supplement.Snapshots, log)
 	return primary, nil
 }
 
-func NeedsCodexSupplement(snapshots map[string]*Snapshot) bool {
+func needsCodexSupplement(snapshots map[string]*readmodel.Snapshot) bool {
 	if len(snapshots) == 0 {
 		return true
 	}
@@ -46,14 +44,14 @@ func NeedsCodexSupplement(snapshots map[string]*Snapshot) bool {
 		if snap == nil || strings.ToLower(strings.TrimSpace(snap.ProviderID)) != "codex" {
 			continue
 		}
-		if CodexQuotaMetricCount(snap) > 0 {
+		if codexQuotaMetricCount(snap) > 0 {
 			return false
 		}
 	}
 	return true
 }
 
-func CodexQuotaMetricCount(s *Snapshot) int {
+func codexQuotaMetricCount(s *readmodel.Snapshot) int {
 	if s == nil {
 		return 0
 	}
@@ -67,8 +65,8 @@ func CodexQuotaMetricCount(s *Snapshot) int {
 	return n
 }
 
-func MergeSnapshots(primary, supplement map[string]*Snapshot, log Logger) map[string]*Snapshot {
-	out := map[string]*Snapshot{}
+func mergeCodexSnapshots(primary, supplement map[string]*readmodel.Snapshot, log Logger) map[string]*readmodel.Snapshot {
+	out := map[string]*readmodel.Snapshot{}
 	for k, v := range primary {
 		if k == "__invalid" {
 			continue
@@ -92,10 +90,10 @@ func MergeSnapshots(primary, supplement map[string]*Snapshot, log Logger) map[st
 		primaryMetricCount, primaryQuotaCount := -1, 0
 		if exists && existing != nil {
 			primaryMetricCount = len(existing.Metrics)
-			primaryQuotaCount = CodexQuotaMetricCount(existing)
+			primaryQuotaCount = codexQuotaMetricCount(existing)
 		}
 		fallbackMetricCount := len(snap.Metrics)
-		fallbackQuotaCount := CodexQuotaMetricCount(snap)
+		fallbackQuotaCount := codexQuotaMetricCount(snap)
 		shouldPrefer := fallbackMetricCount > 0 && (!exists || primaryMetricCount <= 0 || (primaryQuotaCount <= 0 && fallbackQuotaCount > 0))
 		if shouldPrefer || !exists {
 			out[k] = snap
@@ -106,7 +104,7 @@ func MergeSnapshots(primary, supplement map[string]*Snapshot, log Logger) map[st
 		sorted = append(sorted, k)
 	}
 	sort.Strings(sorted)
-	ordered := map[string]*Snapshot{}
+	ordered := map[string]*readmodel.Snapshot{}
 	for _, k := range sorted {
 		ordered[k] = out[k]
 	}
@@ -121,7 +119,7 @@ func OpenUsageSettingsPath() string {
 	return filepath.Join(home, "AppData", "Roaming", "openusage", "settings.json")
 }
 
-func OpenUsageTimeWindow(path string) string {
+func OpenUsageSettingsTimeWindow(path string) string {
 	if path == "" {
 		path = OpenUsageSettingsPath()
 	}
