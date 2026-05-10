@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -142,5 +144,27 @@ func TestFetchAntigravityStatusFallsBackToCommandModelConfigs(t *testing.T) {
 	}
 	if len(antigravityModelConfigs(status)) != 1 {
 		t.Fatalf("expected command model configs: %#v", status)
+	}
+}
+
+func TestAntigravityEndpointFromLog(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ls-main.log")
+	if err := os.WriteFile(path, []byte("Args: --csrf_token redacted-token --extension_server_port 62455\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	port, token := antigravityEndpointFromLog(path)
+	if port != 62455 || token != "redacted-token" {
+		t.Fatalf("unexpected endpoint args port=%d token=%q", port, token)
+	}
+}
+
+func TestParseTasklistPIDs(t *testing.T) {
+	raw := `"Image Name","PID","Session Name","Session#","Mem Usage"` + "\n" +
+		`"language_server_windows_x64.exe","1352","Console","1","12,000 K"` + "\n" +
+		`"Antigravity.exe","7956","Console","1","50,000 K"` + "\n"
+	pids := parseTasklistPIDs(raw)
+	if len(pids) != 1 || pids[0] != 1352 {
+		t.Fatalf("unexpected pids: %#v", pids)
 	}
 }

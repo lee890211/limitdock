@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +38,11 @@ type antigravityProcess struct {
 	PID   int
 	Port  int
 	Token string
+}
+
+type antigravityLogFile struct {
+	Path    string
+	ModTime time.Time
 }
 
 const antigravityQuotaWindow = "5h"
@@ -70,20 +77,29 @@ func (r AntigravityReader) FallbackProviderID() string {
 }
 
 func (r AntigravityReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	for _, status := range r.cachedStatuses() {
 		model := antigravityStatusReadModel(status)
 		if len(model.Snapshots) > 0 {
+			logAntigravityOnce(r.Log, "success", "Antigravity reader captured local quota rows.")
 			return model, nil
 		}
 	}
 
-	for _, endpoint := range antigravityEndpointCandidates(ctx) {
-		status, err := fetchAntigravityStatus(ctx, endpoint)
+	endpoints := antigravityEndpointCandidates(readCtx)
+	if len(endpoints) > 0 {
+		logAntigravityOnce(r.Log, "endpoint-candidates", "Antigravity reader found %d local endpoint candidates.", len(endpoints))
+	}
+	if len(endpoints) > 0 {
+		status, err := fetchFirstAntigravityStatus(readCtx, endpoints, r.Log)
 		if err != nil {
-			continue
+			logAntigravityOnce(r.Log, "endpoint-missing", "Antigravity reader skipped: %v", err)
+			return emptyReadModel(), nil
 		}
 		model := antigravityStatusReadModel(status)
 		if len(model.Snapshots) > 0 {
+			logAntigravityOnce(r.Log, "success", "Antigravity reader captured local quota rows.")
 			return model, nil
 		}
 		logAntigravityOnce(r.Log, "endpoint-no-quota", "Antigravity reader found a local endpoint, but no quota metrics were exposed.")
@@ -92,6 +108,51 @@ func (r AntigravityReader) Read(ctx context.Context) (*readmodel.ReadModel, erro
 
 	logAntigravityOnce(r.Log, "endpoint-missing", "Antigravity reader skipped: no local quota endpoint found.")
 	return emptyReadModel(), nil
+}
+
+type antigravityFetchResult struct {
+	Endpoint antigravityEndpoint
+	Status   map[string]any
+	Err      error
+}
+
+func fetchFirstAntigravityStatus(ctx context.Context, endpoints []antigravityEndpoint, log Logger) (map[string]any, error) {
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("no local quota endpoint found")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ch := make(chan antigravityFetchResult, len(endpoints))
+	for _, endpoint := range endpoints {
+		ep := endpoint
+		go func() {
+			status, err := fetchAntigravityStatus(ctx, ep)
+			ch <- antigravityFetchResult{Endpoint: ep, Status: status, Err: err}
+		}()
+	}
+	var firstErr error
+	for pending := len(endpoints); pending > 0; pending-- {
+		select {
+		case <-ctx.Done():
+			if firstErr != nil {
+				return nil, firstErr
+			}
+			return nil, ctx.Err()
+		case result := <-ch:
+			if result.Err != nil {
+				if firstErr == nil {
+					firstErr = result.Err
+				}
+				continue
+			}
+			cancel()
+			return result.Status, nil
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, fmt.Errorf("no local quota endpoint returned model configs")
 }
 
 func (r AntigravityReader) cachedStatuses() []map[string]any {
@@ -232,13 +293,16 @@ func callAntigravityRPC(ctx context.Context, endpoint antigravityEndpoint, metho
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Connect-Protocol-Version", "1")
 	if endpoint.Token != "" {
-		req.Header.Set("X-Codeium-Csrf-Token", endpoint.Token)
+		req.Header["x-codeium-csrf-token"] = []string{endpoint.Token}
 	}
 
 	client := &http.Client{
-		Timeout: 2500 * time.Millisecond,
+		Timeout: 900 * time.Millisecond,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			DialContext:           (&net.Dialer{Timeout: 350 * time.Millisecond}).DialContext,
+			TLSHandshakeTimeout:   350 * time.Millisecond,
+			ResponseHeaderTimeout: 500 * time.Millisecond,
+			TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
 		},
 	}
 	resp, err := client.Do(req)
@@ -292,6 +356,9 @@ func antigravityEndpointCandidates(ctx context.Context) []antigravityEndpoint {
 		out = append(out, antigravityEndpoint{BaseURL: baseURL, Token: token})
 	}
 
+	for _, endpoint := range detectAntigravityLogEndpoints(ctx) {
+		add(endpoint.BaseURL, endpoint.Token)
+	}
 	for _, proc := range detectAntigravityProcesses(ctx) {
 		ports := []int{}
 		if proc.Port > 0 {
@@ -299,12 +366,10 @@ func antigravityEndpointCandidates(ctx context.Context) []antigravityEndpoint {
 		}
 		ports = append(ports, portsForPID(ctx, proc.PID)...)
 		for _, port := range uniquePorts(ports) {
-			add(fmt.Sprintf("https://127.0.0.1:%d", port), proc.Token)
 			add(fmt.Sprintf("http://127.0.0.1:%d", port), proc.Token)
 		}
 	}
 	for _, port := range []int{8080} {
-		add(fmt.Sprintf("https://127.0.0.1:%d", port), "")
 		add(fmt.Sprintf("http://127.0.0.1:%d", port), "")
 	}
 	antigravityEndpointCache.Lock()
@@ -313,6 +378,144 @@ func antigravityEndpointCandidates(ctx context.Context) []antigravityEndpoint {
 	antigravityEndpointCache.items = copyEndpoints(out)
 	antigravityEndpointCache.Unlock()
 	return out
+}
+
+func detectAntigravityLogEndpoints(ctx context.Context) []antigravityEndpoint {
+	files := antigravityLSLogFiles()
+	out := []antigravityEndpoint{}
+	seen := map[string]bool{}
+	add := func(port int, token string) {
+		if port <= 0 || len(out) >= 24 {
+			return
+		}
+		baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+		key := baseURL + "|" + token
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, antigravityEndpoint{BaseURL: baseURL, Token: token})
+	}
+	tokens := []string{}
+	logPorts := []int{}
+	for _, file := range files {
+		port, token := antigravityEndpointFromLog(file.Path)
+		if port > 0 && !intSeen(logPorts, port) {
+			logPorts = append(logPorts, port)
+		}
+		if token != "" && !stringSeen(tokens, token) {
+			tokens = append(tokens, token)
+		}
+		if len(tokens) >= 1 {
+			break
+		}
+	}
+	lsPorts := []int{}
+	for _, pid := range antigravityLanguageServerPIDs(ctx) {
+		lsPorts = append(lsPorts, portsForPID(ctx, pid)...)
+	}
+	for _, port := range uniquePorts(lsPorts) {
+		if len(tokens) == 0 {
+			add(port, "")
+			continue
+		}
+		for _, token := range tokens {
+			add(port, token)
+		}
+	}
+	if len(lsPorts) == 0 {
+		for _, port := range logPorts {
+			if len(tokens) == 0 {
+				add(port, "")
+				continue
+			}
+			for _, token := range tokens {
+				add(port, token)
+			}
+		}
+	}
+	return out
+}
+
+func antigravityLanguageServerPIDs(ctx context.Context) []int {
+	cmdCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, "tasklist", "/FI", "IMAGENAME eq language_server_windows_x64.exe", "/FO", "CSV", "/NH")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	raw, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	return parseTasklistPIDs(string(raw))
+}
+
+func parseTasklistPIDs(raw string) []int {
+	reader := csv.NewReader(strings.NewReader(raw))
+	reader.FieldsPerRecord = -1
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil
+	}
+	out := []int{}
+	for _, record := range records {
+		if len(record) < 2 {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(record[0]))
+		if !strings.Contains(name, "language_server_windows_x64") {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(record[1]))
+		if err == nil && pid > 0 {
+			out = append(out, pid)
+		}
+	}
+	return out
+}
+
+func antigravityLSLogFiles() []antigravityLogFile {
+	out := []antigravityLogFile{}
+	for _, root := range defaultAntigravityDataDirs() {
+		logRoot := filepath.Join(root, "logs")
+		_ = filepath.WalkDir(logRoot, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d == nil || d.IsDir() || !strings.EqualFold(filepath.Base(path), "ls-main.log") {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			out = append(out, antigravityLogFile{Path: path, ModTime: info.ModTime()})
+			return nil
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ModTime.After(out[j].ModTime)
+	})
+	if len(out) > 8 {
+		out = out[:8]
+	}
+	return out
+}
+
+func antigravityEndpointFromLog(path string) (int, string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, ""
+	}
+	lines := strings.Split(string(b), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if !strings.Contains(line, "--extension_server_port") && !strings.Contains(line, "--csrf_token") {
+			continue
+		}
+		port := intRegex(line, `--extension_server_port(?:=|\s+)(\d+)`)
+		token := stringRegex(line, `--csrf_token(?:=|\s+)([^\s"']+)`)
+		if port > 0 {
+			return port, token
+		}
+	}
+	return 0, ""
 }
 
 func detectAntigravityProcesses(ctx context.Context) []antigravityProcess {
@@ -590,6 +793,24 @@ func uniquePorts(ports []int) []int {
 		out = append(out, port)
 	}
 	return out
+}
+
+func stringSeen(items []string, item string) bool {
+	for _, existing := range items {
+		if existing == item {
+			return true
+		}
+	}
+	return false
+}
+
+func intSeen(items []int, item int) bool {
+	for _, existing := range items {
+		if existing == item {
+			return true
+		}
+	}
+	return false
 }
 
 func copyEndpoints(in []antigravityEndpoint) []antigravityEndpoint {
