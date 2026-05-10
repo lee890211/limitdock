@@ -1,22 +1,32 @@
 # Architecture
 
-LimitDock is a PowerShell WinForms shell around OpenUsage.sh. The main boundary is the OpenUsage read model: LimitDock supervises the daemon, reads snapshots, normalizes quota rows, and renders the bar.
+LimitDock is a Go native Windows shell around a normalized quota read model. OpenUsage.sh is the primary connector: LimitDock supervises the daemon, reads snapshots, normalizes quota rows, and renders the bar. Local custom readers can fill provider gaps when OpenUsage does not expose quota rows.
 
 ## Runtime Boundary
 
-`LimitDock.ps1` owns:
+`cmd/limitdock` and the `internal/*` Go packages own:
 
 - single-instance mutex and PID file
 - OpenUsage daemon start/stop
-- Go read-model probe build/use
-- WinForms status bar and tray icon
+- OpenUsage read-model socket calls
+- local custom provider fallback reads
+- native Windows status bar and tray icon
 - settings persistence
 
-OpenUsage.sh owns provider discovery and telemetry. LimitDock does not parse vendor databases directly for quota.
+The runtime app does not invoke external shell scripts. Startup registration, docking, tray behavior, OpenUsage process management, and work-area restore are implemented from Go.
 
-## Read-Model Adapter
+The settings dialog still exposes OpenUsage and diagnostics affordances from the legacy app: it can open `%APPDATA%\openusage\settings.json`, open the OpenUsage settings folder, browse LimitDock logs, open the app log, and copy diagnostic paths. It does not expose Antigravity path fields because Antigravity is now auto-detected by the custom reader.
 
-The Go probe under `probes/openusage-readmodel` reads `/v1/read-model` from the OpenUsage daemon socket and returns JSON to PowerShell. PowerShell merges snapshots into provider cards.
+OpenUsage.sh owns provider discovery and telemetry for upstream-supported providers. LimitDock custom readers are intentionally narrow and quota-only; they are used for missing providers or fallbacks, not as a replacement telemetry system.
+
+## Provider Readers
+
+`internal/provider` is the single read boundary for quota sources. The UI asks the provider `Aggregator` for one `readmodel.ReadModel`; it does not know whether a snapshot came from OpenUsage or a LimitDock custom reader.
+
+- `internal/connector/openusage` owns the external OpenUsage connector: daemon management and socket reads.
+- `openusage.Reader` reads `/v1/read-model` from the OpenUsage daemon socket and is registered first.
+- Custom readers emit the same `readmodel.Snapshot` and `readmodel.Metric` shape, so `internal/quota` can normalize all providers through one path.
+- Duplicate snapshot keys keep the first reader's data. Fallback readers also declare a provider id; when OpenUsage already has quota rows for that provider, the fallback snapshot is skipped even if its account key differs.
 
 Quota normalization is intentionally narrow:
 
@@ -32,6 +42,7 @@ Throughput, spend, request, token, and cost metrics are filtered before renderin
 
 Codex:
 
+- OpenUsage is read first. If OpenUsage has no Codex quota rows, the custom Codex fallback reader scans recent `.codex/sessions` JSONL events for `rate_limits`.
 - Keep `rate_limit_codex_bengalfox_*` rows.
 - Prefer `attributes.rate_limit_codex_bengalfox_name` or matching raw name fields for labels such as `GPT-5.3-Codex-Spark`.
 
@@ -47,8 +58,9 @@ Cursor:
 
 Antigravity:
 
-- No custom aliasing or quota parser is added in this pass.
-- Antigravity appears as quota only if OpenUsage exposes it as a provider or quota-like snapshot.
+- Antigravity is handled as a quota-only custom reader when OpenUsage does not expose it.
+- The custom reader looks for local Antigravity language-server status and common `%APPDATA%\Antigravity` cache locations, and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
+- If no quota rows are available, Antigravity is not rendered as a status-only card.
 
 ## Settings
 
@@ -56,6 +68,8 @@ Antigravity:
 
 - `dockMode`
 - `dockEdge`
+- `theme`
+- `overlayOpacity`
 - `autoHide`
 - `hiddenQuotaBands`
 - `startWithWindows`
@@ -63,13 +77,13 @@ Antigravity:
 
 `settings.example.json` documents portable defaults.
 
-The Windows startup option is implemented as a per-user `.lnk` in the user's Startup folder. The shortcut prefers `launch-limitdock.vbs`, then `LimitDock.exe`, then script mode. This keeps startup behavior local to the extracted folder and avoids machine-wide registry writes.
+The Windows startup option is implemented as a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Disabling startup removes that value and also cleans up the old `LimitDock.lnk` shortcut if it exists from a previous release.
 
 ## Appbar And DPI
 
 Reserved mode registers a shell appbar for the selected edge and also applies a Windows work area that matches the reserved bounds. This dual path is deliberate: appbar negotiation alone can be inconsistent under DPI scaling and shell edge changes.
 
-The appbar rectangle is scaled for DPI before `SHAppBarMessage`, while the form and fallback work area stay in WinForms screen coordinates. UI dimensions are kept in logical pixels and clamped from the active monitor work area instead of multiplying by DPI again. Hide and overlay transitions unregister the appbar and restore the captured work area.
+The appbar rectangle is passed to `SHAppBarMessage` in native screen pixels, while UI dimensions are kept in compact Windows logical units and clamped from the active monitor bounds. Reserved mode uses the current Windows work area. In overlay mode, left/right docks position against the full screen edge so stale reserved work-area values cannot move the floating dock, while top/bottom ribbons use the Windows work area so the taskbar/menu region remains visible. Hide and overlay transitions unregister the appbar and restore the captured work area. On exit, the app schedules a short delayed `LimitDock.exe --restore-workarea` helper run so Windows shell appbar teardown cannot leave stale reserved space behind.
 
 ## Rendering Loop
 

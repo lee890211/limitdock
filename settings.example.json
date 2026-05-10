@@ -2,14 +2,10 @@
   "autoHide": false,
   "dockMode": "reserved",
   "dockEdge": "bottom",
+  "theme": "light",
+  "overlayOpacity": 100,
   "startWithWindows": false,
   "hiddenQuotaBands": {},
-  "antigravity": {
-    "enabled": true,
-    "binaryPath": "",
-    "dataDir": "",
-    "subtitle": ""
-  },
   "gaugeMaxBands": 4,
   "gaugeWarnPercent": 72,
   "gaugeCritPercent": 90,

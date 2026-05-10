@@ -1,13 +1,14 @@
 # LimitDock Notes
 
-LimitDock is a Windows WinForms companion for OpenUsage.sh quota telemetry. It exists to make OpenUsage.sh quota data visible while coding without opening a terminal dashboard.
+LimitDock is a native Windows companion for OpenUsage.sh quota telemetry. It exists to make OpenUsage.sh quota data visible while coding without opening a terminal dashboard.
 
 Current architecture:
 
 - Use the official OpenUsage.sh Windows binary when available, downloading it on first run when it is not bundled.
-- Build and ship only the small `probes/openusage-readmodel` bridge locally.
 - Start and stop the OpenUsage telemetry daemon with the LimitDock session.
-- Read the daemon read model through the local socket endpoint.
+- Read provider data through a single Go provider aggregator.
+- Use OpenUsage's local read-model socket for upstream-supported providers.
+- Use custom quota-only readers for providers outside OpenUsage, starting with Antigravity.
 - Normalize quota-like rows into compact provider cards.
 - Render top, bottom, left, or right docks in overlay or reserved mode.
 
@@ -23,5 +24,5 @@ Current product rules:
 Release shape:
 
 - Publish `dist/LimitDock-<version>.zip`.
-- Include `LimitDock.exe`, launch scripts, icons, README screenshot assets, `settings.example.json`, and `engine/bin/openusage-readmodel.exe`.
+- Include `LimitDock.exe`, icons, README screenshot assets, and `settings.example.json`.
 - Do not include personal settings, runtime databases, logs, PID files, Go caches, or downloaded OpenUsage binaries unless intentionally making an offline release.
