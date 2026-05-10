@@ -17,16 +17,18 @@ if ($errors) {
 }
 
 if (-not $SkipGo) {
-  $probeDir = Join-Path $RepoRoot "probes\openusage-readmodel"
   $go = Get-Command go -ErrorAction SilentlyContinue
   if (-not $go) {
-    Write-Warning "Go is not installed; skipping read-model probe tests."
+    throw "Go is required to test and build the Go LimitDock app."
   } else {
-    Write-Host "Checking openusage-readmodel..."
+    Write-Host "Checking Go LimitDock app..."
     $env:GOCACHE = Join-Path $RepoRoot "engine\.gocache"
-    Push-Location $probeDir
+    New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot "engine\bin") | Out-Null
+    Push-Location $RepoRoot
     try {
       go test ./...
+      go build -ldflags "-H windowsgui" -o (Join-Path $RepoRoot "engine\bin\LimitDock.exe") .\cmd\limitdock
+      Copy-Item -LiteralPath (Join-Path $RepoRoot "cmd\limitdock\LimitDock.exe.manifest") -Destination (Join-Path $RepoRoot "engine\bin\LimitDock.exe.manifest") -Force
     } finally {
       Pop-Location
     }

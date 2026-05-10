@@ -9,25 +9,7 @@ $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $DistRoot = Join-Path $RepoRoot "dist"
 $ReleaseDir = Join-Path $DistRoot "LimitDock-$Version"
 $ReleaseZip = Join-Path $DistRoot "LimitDock-$Version.zip"
-$ProbeDir = Join-Path $RepoRoot "probes\openusage-readmodel"
-$ProbeOut = Join-Path $ReleaseDir "engine\bin\openusage-readmodel.exe"
-
-function ConvertTo-Ps2ExeVersion {
-  param([string]$RawVersion)
-  if ($RawVersion -match "^v?(?<yyyy>\d{4})(?<mm>\d{2})(?<dd>\d{2})$") {
-    return "$($Matches['yyyy']).$([int]$Matches['mm']).$([int]$Matches['dd']).0"
-  }
-  if ($RawVersion -match "^\d+\.\d+\.\d+\.\d+$") {
-    return $RawVersion
-  }
-  if ($RawVersion -match "^\d+\.\d+\.\d+$") {
-    return "$RawVersion.0"
-  }
-  if ($RawVersion -match "^\d+\.\d+$") {
-    return "$RawVersion.0.0"
-  }
-  return "0.0.0.0"
-}
+$GoExeOut = Join-Path $ReleaseDir "LimitDock.exe"
 
 & (Join-Path $RepoRoot "scripts\check.ps1")
 
@@ -57,32 +39,19 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot "launch-limitdock.vbs") -Destination
 
 $go = Get-Command go -ErrorAction SilentlyContinue
 if (-not $go) {
-  throw "Go is required to build engine\bin\openusage-readmodel.exe for release."
+  throw "Go is required to build LimitDock.exe for release."
 }
-Push-Location $ProbeDir
+Push-Location $RepoRoot
 try {
   $env:GOCACHE = Join-Path $RepoRoot "engine\.gocache"
-  go build -o $ProbeOut .
+  go build -ldflags "-H windowsgui" -o $GoExeOut .\cmd\limitdock
 } finally {
   Pop-Location
 }
 
-$ps2exe = Get-Command Invoke-ps2exe -ErrorAction SilentlyContinue
-if (-not $ps2exe) {
-  Copy-Item -LiteralPath (Join-Path $RepoRoot "LimitDock.ps1") -Destination $ReleaseDir -Force
-  Write-Warning "Invoke-ps2exe is not installed. Packaged script release only; install ps2exe to produce LimitDock.exe."
-} else {
-  $exeVersion = ConvertTo-Ps2ExeVersion $Version
-  Invoke-ps2exe `
-    -inputFile (Join-Path $RepoRoot "LimitDock.ps1") `
-    -outputFile (Join-Path $ReleaseDir "LimitDock.exe") `
-    -title "LimitDock" `
-    -description "Windows desktop dock for remaining agent quota" `
-    -product "LimitDock" `
-    -version $exeVersion `
-    -noConsole `
-    -STA `
-    -requireAdmin:$false
+$manifest = Join-Path $RepoRoot "cmd\limitdock\LimitDock.exe.manifest"
+if (Test-Path -LiteralPath $manifest) {
+  Copy-Item -LiteralPath $manifest -Destination (Join-Path $ReleaseDir "LimitDock.exe.manifest") -Force
 }
 
 if ($IncludeOpenUsageBinary -and (-not $SkipOpenUsageDownload)) {

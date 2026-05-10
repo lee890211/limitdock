@@ -1,22 +1,22 @@
 # Architecture
 
-LimitDock is a PowerShell WinForms shell around OpenUsage.sh. The main boundary is the OpenUsage read model: LimitDock supervises the daemon, reads snapshots, normalizes quota rows, and renders the bar.
+LimitDock is a Go native Windows shell around OpenUsage.sh. The main boundary is the OpenUsage read model: LimitDock supervises the daemon, reads snapshots, normalizes quota rows, and renders the bar.
 
 ## Runtime Boundary
 
-`LimitDock.ps1` owns:
+`cmd/limitdock` and the `internal/*` Go packages own:
 
 - single-instance mutex and PID file
 - OpenUsage daemon start/stop
-- Go read-model probe build/use
-- WinForms status bar and tray icon
+- read-model socket calls
+- native Windows status bar and tray icon
 - settings persistence
 
 OpenUsage.sh owns provider discovery and telemetry. LimitDock does not parse vendor databases directly for quota.
 
 ## Read-Model Adapter
 
-The Go probe under `probes/openusage-readmodel` reads `/v1/read-model` from the OpenUsage daemon socket and returns JSON to PowerShell. PowerShell merges snapshots into provider cards.
+`internal/readmodel` reads `/v1/read-model` from the OpenUsage daemon socket directly from the Go app. `internal/quota` merges snapshots into provider cards.
 
 Quota normalization is intentionally narrow:
 
@@ -69,7 +69,7 @@ The Windows startup option is implemented as a per-user `.lnk` in the user's Sta
 
 Reserved mode registers a shell appbar for the selected edge and also applies a Windows work area that matches the reserved bounds. This dual path is deliberate: appbar negotiation alone can be inconsistent under DPI scaling and shell edge changes.
 
-The appbar rectangle is scaled for DPI before `SHAppBarMessage`, while the form and fallback work area stay in WinForms screen coordinates. UI dimensions are kept in logical pixels and clamped from the active monitor work area instead of multiplying by DPI again. Hide and overlay transitions unregister the appbar and restore the captured work area.
+The appbar rectangle is passed to `SHAppBarMessage` in native screen pixels, while UI dimensions are kept in compact Windows logical units and clamped from the active monitor bounds. Hide and overlay transitions unregister the appbar and restore the captured work area.
 
 ## Rendering Loop
 

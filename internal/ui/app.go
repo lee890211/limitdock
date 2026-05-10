@@ -1,0 +1,1105 @@
+package ui
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/lxn/walk"
+
+	"limitdock/internal/logging"
+	"limitdock/internal/native"
+	"limitdock/internal/openusage"
+	"limitdock/internal/paths"
+	"limitdock/internal/quota"
+	"limitdock/internal/readmodel"
+	"limitdock/internal/settings"
+)
+
+type Options struct {
+	NoDownload     bool
+	RefreshSeconds int
+}
+
+type App struct {
+	paths   paths.Paths
+	cfg     settings.Settings
+	log     *logging.Logger
+	manager *openusage.Manager
+
+	mw      *walk.MainWindow
+	surface *walk.CustomWidget
+	notify  *walk.NotifyIcon
+
+	fontSmall *walk.Font
+	fontText  *walk.Font
+	fontBold  *walk.Font
+	fontMain  *walk.Font
+	fontIcon  *walk.Font
+	images    map[string]*walk.Bitmap
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	mu          sync.Mutex
+	cards       []quota.Card
+	status      string
+	visible     bool
+	appbar      bool
+	baseWork    *native.Rect
+	workScale   float64
+	cardHits    []cardHit
+	gearHit     walk.Rectangle
+	pinHit      walk.Rectangle
+	lastCardHit map[string]time.Time
+	revealed    bool
+}
+
+type cardHit struct {
+	rect walk.Rectangle
+	card quota.Card
+}
+
+func Run(p paths.Paths, opts Options) error {
+	if err := paths.Ensure(p); err != nil {
+		return err
+	}
+	log := logging.New(p.Logs)
+	cfg, err := settings.Load(p.Settings)
+	if err != nil {
+		log.Printf("Failed to load settings, using defaults: %v", err)
+		cfg = settings.Defaults()
+	}
+	if opts.RefreshSeconds >= 5 {
+		cfg.RefreshSeconds = opts.RefreshSeconds
+	}
+	app := &App{
+		paths:       p,
+		cfg:         cfg,
+		log:         log,
+		visible:     true,
+		status:      "Starting",
+		images:      map[string]*walk.Bitmap{},
+		lastCardHit: map[string]time.Time{},
+	}
+	app.ctx, app.cancel = context.WithCancel(context.Background())
+	app.manager = &openusage.Manager{
+		ExePath:    p.OpenUsageExe,
+		SocketPath: p.SocketPath,
+		Downloads:  p.Downloads,
+		ExtractDir: p.OpenUsageDir,
+		DaemonPID:  p.DaemonPID,
+		OutLog:     p.DaemonOutLog,
+		ErrLog:     p.DaemonErrLog,
+		Log:        log,
+	}
+	if err := os.WriteFile(p.AppPID, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
+		log.Printf("Could not write app pid: %v", err)
+	}
+	defer os.Remove(p.AppPID)
+	defer app.cleanup()
+
+	if err := app.createWindow(); err != nil {
+		return err
+	}
+	go app.bootstrapOpenUsage(opts.NoDownload)
+	go app.refreshLoop()
+	go app.hoverLoop()
+	if code := app.mw.Run(); code != 0 {
+		log.Printf("Walk main loop exited with code %d", code)
+	}
+	return nil
+}
+
+func (a *App) createWindow() error {
+	var err error
+	a.fontSmall, _ = walk.NewFont("Segoe UI", 8, 0)
+	a.fontText, _ = walk.NewFont("Segoe UI", 9, 0)
+	a.fontBold, _ = walk.NewFont("Segoe UI", 9, walk.FontBold)
+	a.fontMain, _ = walk.NewFont("Segoe UI", 13, walk.FontBold)
+	a.fontIcon, _ = walk.NewFont("Segoe UI Symbol", 13, walk.FontBold)
+
+	a.mw, err = walk.NewMainWindow()
+	if err != nil {
+		return err
+	}
+	a.mw.SetName("LimitDock")
+	_ = a.mw.SetTitle("LimitDock")
+	if brush, err := walk.NewSolidColorBrush(themeBar); err == nil {
+		a.mw.SetBackground(brush)
+	}
+	if icon := a.loadBitmap("Codex.png"); icon != nil {
+		_ = a.mw.SetIcon(icon)
+	}
+	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		a.cancel()
+		a.unregisterAppBar()
+		if a.notify != nil {
+			_ = a.notify.SetVisible(false)
+		}
+	})
+
+	layout := walk.NewHBoxLayout()
+	_ = layout.SetMargins(walk.Margins{})
+	_ = layout.SetSpacing(0)
+	_ = a.mw.SetLayout(layout)
+
+	a.surface, err = walk.NewCustomWidget(a.mw, 0, a.paint)
+	if err != nil {
+		return err
+	}
+	a.surface.SetClearsBackground(false)
+	a.surface.SetInvalidatesOnResize(true)
+	_ = a.surface.SetAlwaysConsumeSpace(true)
+	a.surface.MouseDown().Attach(a.handleMouseDown)
+	_ = layout.SetStretchFactor(a.surface, 1)
+
+	a.applyDock()
+	if !(a.cfg.DockMode == "overlay" && a.cfg.AutoHide && isSide(a.cfg.DockEdge)) {
+		a.mw.Show()
+	}
+	if err := a.setupTray(); err != nil {
+		a.log.Printf("Notify icon setup failed: %v", err)
+	}
+	return nil
+}
+
+func (a *App) setupTray() error {
+	ni, err := walk.NewNotifyIcon(a.mw)
+	if err != nil {
+		return err
+	}
+	a.notify = ni
+	if icon := a.loadBitmap("Codex.png"); icon != nil {
+		_ = ni.SetIcon(icon)
+	}
+	_ = ni.SetToolTip("LimitDock")
+	a.addTrayAction("Hide Status Bar", func() { a.setStatusVisible(false) })
+	a.addTrayAction("Show Status Bar", func() { a.setStatusVisible(true) })
+	a.addTrayAction("Settings", func() { a.showSettingsDialog() })
+	a.addTrayAction("Exit", func() { _ = a.mw.Close() })
+	return ni.SetVisible(true)
+}
+
+func (a *App) addTrayAction(text string, fn func()) {
+	action := walk.NewAction()
+	_ = action.SetText(text)
+	action.Triggered().Attach(fn)
+	_ = a.notify.ContextMenu().Actions().Add(action)
+}
+
+func (a *App) bootstrapOpenUsage(noDownload bool) {
+	a.setStatus("Starting OpenUsage")
+	if err := a.manager.EnsureBinary(a.ctx, noDownload); err != nil {
+		a.log.Printf("OpenUsage binary unavailable: %v", err)
+		a.setStatus("OpenUsage unavailable")
+		return
+	}
+	if err := a.manager.Start(); err != nil {
+		a.log.Printf("Failed to launch daemon process: %v", err)
+		a.setStatus("Waiting for OpenUsage")
+		return
+	}
+	if a.manager.WaitReady(a.ctx, 12*time.Second) {
+		a.setStatus("OpenUsage ready")
+		a.refreshOnce()
+	} else {
+		a.setStatus("Waiting for OpenUsage")
+	}
+}
+
+func (a *App) refreshLoop() {
+	a.refreshOnce()
+	ticker := time.NewTicker(time.Duration(max(5, a.cfg.RefreshSeconds)) * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			a.refreshOnce()
+		}
+	}
+}
+
+func (a *App) refreshOnce() {
+	if !a.isVisible() {
+		return
+	}
+	client := readmodel.Client{SocketPath: a.paths.SocketPath}
+	model, err := readmodel.FetchMerged(a.ctx, client, readmodel.OpenUsageSettingsPath(), a.log)
+	if err != nil {
+		a.log.Printf("Refresh failed: %v", err)
+		a.setStatus("Waiting for OpenUsage")
+		return
+	}
+	cards := quota.Cards(model, a.cfg)
+	a.mu.Lock()
+	a.cards = cards
+	a.mu.Unlock()
+	a.setStatus("Updated " + time.Now().Format("15:04:05"))
+}
+
+func (a *App) paint(canvas *walk.Canvas, update walk.Rectangle) error {
+	bounds := canvas.BoundsPixels()
+	bar := brush(themeBar)
+	defer bar.Dispose()
+	canvas.FillRectanglePixels(bar, bounds)
+
+	a.mu.Lock()
+	cards := append([]quota.Card(nil), a.cards...)
+	status := a.status
+	a.mu.Unlock()
+
+	side := isSide(a.cfg.DockEdge)
+	a.cardHits = nil
+	if side {
+		a.paintSide(canvas, bounds, cards, status)
+	} else {
+		a.paintRibbon(canvas, bounds, cards, status)
+	}
+	return nil
+}
+
+func (a *App) paintRibbon(canvas *walk.Canvas, bounds walk.Rectangle, cards []quota.Card, status string) {
+	pad := 8
+	rail := walk.Rectangle{X: pad, Y: pad, Width: 58, Height: bounds.Height - pad*2}
+	a.paintRail(canvas, rail, false)
+
+	statusW := 132
+	statusRect := walk.Rectangle{X: bounds.Width - statusW - pad, Y: pad, Width: statusW, Height: bounds.Height - pad*2}
+	a.paintStatus(canvas, statusRect, status)
+
+	x := rail.Right() + 8
+	right := statusRect.X - 8
+	cardH := bounds.Height - pad*2
+	if len(cards) == 0 {
+		a.paintWaiting(canvas, walk.Rectangle{X: x, Y: pad, Width: max(210, right-x), Height: cardH})
+		return
+	}
+	gap := 6
+	cardW := 242
+	if len(cards) > 0 {
+		avail := right - x - gap*(len(cards)-1)
+		cardW = max(210, min(330, avail/len(cards)))
+	}
+	for _, card := range cards {
+		if x+cardW > right {
+			break
+		}
+		rect := walk.Rectangle{X: x, Y: pad, Width: cardW, Height: cardH}
+		a.paintCard(canvas, rect, card, false)
+		a.cardHits = append(a.cardHits, cardHit{rect: rect, card: card})
+		x += cardW + gap
+	}
+}
+
+func (a *App) paintSide(canvas *walk.Canvas, bounds walk.Rectangle, cards []quota.Card, status string) {
+	bg := brush(themeSideBack)
+	defer bg.Dispose()
+	canvas.FillRectanglePixels(bg, bounds)
+
+	top := walk.Rectangle{X: 0, Y: 0, Width: bounds.Width, Height: 42}
+	topBrush := brush(themeSideTop)
+	defer topBrush.Dispose()
+	canvas.FillRectanglePixels(topBrush, top)
+	a.gearHit = walk.Rectangle{X: 10, Y: 8, Width: 28, Height: 26}
+	a.pinHit = walk.Rectangle{X: 44, Y: 8, Width: 28, Height: 26}
+	a.paintSideTool(canvas, a.gearHit, "\u2699")
+	if a.cfg.DockMode == "overlay" {
+		a.paintSideTool(canvas, a.pinHit, "\U0001F50C")
+	} else {
+		a.pinHit = walk.Rectangle{}
+	}
+	canvas.DrawTextPixels(status, a.fontSmall, themeSideBlue, walk.Rectangle{X: 82, Y: 10, Width: bounds.Width - 92, Height: 20}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+	a.paintHLine(canvas, 41, bounds.Width)
+
+	y := 42
+	cardH := 78
+	if len(cards) == 0 {
+		a.paintSideWaiting(canvas, walk.Rectangle{X: 0, Y: y, Width: bounds.Width, Height: cardH})
+		return
+	}
+	for _, card := range cards {
+		if y+cardH > bounds.Height {
+			break
+		}
+		rect := walk.Rectangle{X: 0, Y: y, Width: bounds.Width, Height: cardH}
+		a.paintSideCard(canvas, rect, card)
+		a.cardHits = append(a.cardHits, cardHit{rect: rect, card: card})
+		y += cardH
+	}
+}
+
+func (a *App) paintSideTool(canvas *walk.Canvas, rect walk.Rectangle, text string) {
+	canvas.DrawTextPixels(text, a.fontIcon, themeSideIcon, rect, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine)
+}
+
+func (a *App) paintSideWaiting(canvas *walk.Canvas, rect walk.Rectangle) {
+	bg := brush(themeSideCard)
+	defer bg.Dispose()
+	canvas.FillRectanglePixels(bg, rect)
+	a.paintHLine(canvas, rect.Y, rect.Width)
+	canvas.DrawTextPixels("Waiting for OpenUsage", a.fontBold, themeSideText, walk.Rectangle{X: 16, Y: rect.Y + 12, Width: rect.Width - 24, Height: 18}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+	canvas.DrawTextPixels("Quota rows appear after telemetry refresh", a.fontSmall, themeSideMuted, walk.Rectangle{X: 16, Y: rect.Y + 34, Width: rect.Width - 24, Height: 18}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+}
+
+func (a *App) paintSideCard(canvas *walk.Canvas, rect walk.Rectangle, card quota.Card) {
+	bg := brush(themeSideCard)
+	defer bg.Dispose()
+	canvas.FillRectanglePixels(bg, rect)
+	a.paintHLine(canvas, rect.Y, rect.Width)
+
+	a.paintProviderIcon(canvas, card.Name, walk.Rectangle{X: rect.X + 16, Y: rect.Y + 10, Width: 18, Height: 18})
+	canvas.DrawTextPixels(card.Name, a.fontBold, themeSideText, walk.Rectangle{X: rect.X + 45, Y: rect.Y + 8, Width: 180, Height: 18}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+
+	rowY := rect.Y + 29
+	rowH := 18
+	for i, band := range card.Bands {
+		if i >= 2 || rowY+rowH > rect.Bottom()-5 {
+			break
+		}
+		canvas.DrawTextPixels(sideCaption(band), a.fontSmall, themeSideText, walk.Rectangle{X: rect.X + 45, Y: rowY, Width: 100, Height: rowH}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+		canvas.DrawTextPixels(band.Reset, a.fontSmall, themeSideText, walk.Rectangle{X: rect.X + 145, Y: rowY, Width: 70, Height: rowH}, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+		canvas.DrawTextPixels(percentText(band.Percent), a.fontSmall, themeSideText, walk.Rectangle{X: rect.X + 224, Y: rowY, Width: 38, Height: rowH}, walk.TextRight|walk.TextVCenter|walk.TextSingleLine)
+		a.paintGaugeLight(canvas, walk.Rectangle{X: rect.X + 272, Y: rowY + 4, Width: 50, Height: 12}, band.Percent)
+		rowY += 20
+	}
+}
+
+func (a *App) paintProviderIcon(canvas *walk.Canvas, name string, rect walk.Rectangle) {
+	switch strings.ToLower(name) {
+	case "codex":
+		bg := brush(themeCodexIcon)
+		defer bg.Dispose()
+		canvas.FillEllipsePixels(bg, rect)
+		canvas.DrawTextPixels("o", a.fontBold, themeIconFore, inset(rect, 2, 1), walk.TextCenter|walk.TextVCenter|walk.TextSingleLine)
+	case "gemini":
+		bg := brush(themeGeminiIcon)
+		defer bg.Dispose()
+		canvas.FillEllipsePixels(bg, rect)
+		canvas.DrawTextPixels("\u2726", a.fontSmall, themeIconFore, inset(rect, 1, 1), walk.TextCenter|walk.TextVCenter|walk.TextSingleLine)
+	default:
+		if img := a.loadBitmap(name + ".png"); img != nil {
+			canvas.DrawImageStretchedPixels(img, rect)
+			return
+		}
+		bg := brush(themeSideText)
+		defer bg.Dispose()
+		canvas.FillRectanglePixels(bg, rect)
+	}
+}
+
+func (a *App) paintHLine(canvas *walk.Canvas, y, width int) {
+	pen, _ := walk.NewCosmeticPen(walk.PenSolid, themeSideLine)
+	if pen == nil {
+		return
+	}
+	defer pen.Dispose()
+	canvas.DrawLinePixels(pen, walk.Point{X: 0, Y: y}, walk.Point{X: width, Y: y})
+}
+
+func (a *App) paintGaugeLight(canvas *walk.Canvas, rect walk.Rectangle, pct *float64) {
+	track := brush(themeGaugeTrackLight)
+	defer track.Dispose()
+	canvas.FillRectanglePixels(track, rect)
+	pen, _ := walk.NewCosmeticPen(walk.PenSolid, themeGaugeBorder)
+	if pen != nil {
+		defer pen.Dispose()
+		canvas.DrawRectanglePixels(pen, rect)
+	}
+	if pct == nil {
+		return
+	}
+	w := int(float64(rect.Width-2) * *pct / 100.0)
+	if w < 1 && *pct > 0 {
+		w = 1
+	}
+	fill := brush(themeGaugeFillLight)
+	defer fill.Dispose()
+	canvas.FillRectanglePixels(fill, walk.Rectangle{X: rect.X + 1, Y: rect.Y + 1, Width: w, Height: rect.Height - 2})
+}
+
+func (a *App) paintRail(canvas *walk.Canvas, rect walk.Rectangle, horizontal bool) {
+	bg := brush(themePanel)
+	defer bg.Dispose()
+	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 8, Height: 8})
+
+	if horizontal {
+		a.gearHit = walk.Rectangle{X: rect.X + 8, Y: rect.Y + 7, Width: 28, Height: 28}
+		a.pinHit = walk.Rectangle{X: a.gearHit.Right() + 7, Y: rect.Y + 7, Width: 28, Height: 28}
+	} else {
+		a.gearHit = walk.Rectangle{X: rect.X + 15, Y: rect.Y + 8, Width: 28, Height: 26}
+		a.pinHit = walk.Rectangle{X: rect.X + 15, Y: a.gearHit.Bottom() + 6, Width: 28, Height: 26}
+	}
+	a.paintIconButton(canvas, a.gearHit, "⚙")
+	if a.cfg.DockMode == "overlay" {
+		if a.cfg.AutoHide {
+			a.paintIconButton(canvas, a.pinHit, "▣")
+		} else {
+			a.paintIconButton(canvas, a.pinHit, "▤")
+		}
+	} else {
+		a.pinHit = walk.Rectangle{}
+	}
+}
+
+func (a *App) paintIconButton(canvas *walk.Canvas, rect walk.Rectangle, text string) {
+	bg := brush(themeStatusBack)
+	defer bg.Dispose()
+	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 6, Height: 6})
+	canvas.DrawTextPixels(text, a.fontIcon, themeFore, rect, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine)
+}
+
+func (a *App) paintStatus(canvas *walk.Canvas, rect walk.Rectangle, status string) {
+	bg := brush(themeStatusBack)
+	defer bg.Dispose()
+	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 7, Height: 7})
+	canvas.DrawTextPixels(status, a.fontBold, themeAccent, rect, walk.TextCenter|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+}
+
+func (a *App) paintWaiting(canvas *walk.Canvas, rect walk.Rectangle) {
+	bg := brush(themeWarnBack)
+	defer bg.Dispose()
+	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 7, Height: 7})
+	canvas.DrawTextPixels("LimitDock waiting for OpenUsage", a.fontBold, themeWarnFore, inset(rect, 10, 6), walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextEndEllipsis)
+	canvas.DrawTextPixels("Quota rows appear after telemetry refresh", a.fontSmall, themeMuted, walk.Rectangle{X: rect.X + 10, Y: rect.Y + 30, Width: rect.Width - 20, Height: 20}, walk.TextLeft|walk.TextTop|walk.TextSingleLine|walk.TextEndEllipsis)
+}
+
+func (a *App) paintCard(canvas *walk.Canvas, rect walk.Rectangle, card quota.Card, side bool) {
+	bg := brush(levelColor(card.Level))
+	defer bg.Dispose()
+	canvas.FillRoundedRectanglePixels(bg, rect, walk.Size{Width: 7, Height: 7})
+
+	x := rect.X + 9
+	y := rect.Y + 7
+	if img := a.loadBitmap(card.Name + ".png"); img != nil {
+		canvas.DrawImageStretchedPixels(img, walk.Rectangle{X: x, Y: y + 1, Width: 20, Height: 20})
+		x += 26
+	}
+	titleW := rect.Width - (x - rect.X) - 74
+	canvas.DrawTextPixels(card.Name, a.fontBold, themeFore, walk.Rectangle{X: x, Y: y, Width: titleW, Height: 20}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+	canvas.DrawTextPixels(card.Main, a.fontMain, themeAccent, walk.Rectangle{X: rect.Right() - 72, Y: y - 2, Width: 62, Height: 24}, walk.TextRight|walk.TextVCenter|walk.TextSingleLine)
+
+	rowY := y + 25
+	rowH := 16
+	maxRows := 2
+	if side {
+		maxRows = 3
+	}
+	for i, band := range card.Bands {
+		if i >= maxRows || rowY+rowH > rect.Bottom()-5 {
+			break
+		}
+		captionW := rect.Width - 102
+		canvas.DrawTextPixels(band.Caption, a.fontSmall, themeFore, walk.Rectangle{X: rect.X + 10, Y: rowY, Width: captionW, Height: rowH}, walk.TextLeft|walk.TextVCenter|walk.TextSingleLine|walk.TextEndEllipsis)
+		gauge := walk.Rectangle{X: rect.Right() - 82, Y: rowY + 4, Width: 42, Height: 7}
+		a.paintGauge(canvas, gauge, band.Percent)
+		pct := ""
+		if band.Percent != nil {
+			pct = fmt.Sprintf("%.0f%%", *band.Percent)
+		}
+		canvas.DrawTextPixels(pct, a.fontSmall, themeMuted, walk.Rectangle{X: rect.Right() - 37, Y: rowY - 1, Width: 28, Height: rowH}, walk.TextRight|walk.TextVCenter|walk.TextSingleLine)
+		rowY += rowH + 2
+	}
+}
+
+func (a *App) paintGauge(canvas *walk.Canvas, rect walk.Rectangle, pct *float64) {
+	track := brush(walk.RGB(69, 75, 83))
+	defer track.Dispose()
+	canvas.FillRoundedRectanglePixels(track, rect, walk.Size{Width: 4, Height: 4})
+	if pct == nil {
+		return
+	}
+	w := int(float64(rect.Width) * *pct / 100.0)
+	if w < 1 && *pct > 0 {
+		w = 1
+	}
+	fill := brush(themeAccent)
+	defer fill.Dispose()
+	canvas.FillRoundedRectanglePixels(fill, walk.Rectangle{X: rect.X, Y: rect.Y, Width: w, Height: rect.Height}, walk.Size{Width: 4, Height: 4})
+}
+
+func (a *App) handleMouseDown(x, y int, button walk.MouseButton) {
+	if button != walk.LeftButton {
+		return
+	}
+	pt := walk.Point{X: x, Y: y}
+	if contains(a.gearHit, pt) {
+		a.showSettingsDialog()
+		return
+	}
+	if contains(a.pinHit, pt) {
+		a.cfg.AutoHide = !a.cfg.AutoHide
+		_ = settings.Save(a.paths.Settings, a.cfg)
+		a.applyDock()
+		a.invalidate()
+		return
+	}
+	for _, hit := range a.cardHits {
+		if !contains(hit.rect, pt) {
+			continue
+		}
+		now := time.Now()
+		last := a.lastCardHit[hit.card.SnapshotKey]
+		a.lastCardHit[hit.card.SnapshotKey] = now
+		if now.Sub(last) <= 420*time.Millisecond {
+			a.showBandPicker(hit.card)
+		}
+		return
+	}
+}
+
+func (a *App) applyDock() {
+	if a.mw == nil || a.mw.IsDisposed() {
+		return
+	}
+	a.unregisterAppBar()
+	native.SetPopupToolWindow(uintptr(a.mw.Handle()))
+	full := native.PrimaryBounds()
+	work, err := native.GetWorkArea()
+	if err != nil {
+		work = full
+	}
+	rect := dockRect(full, work, a.cfg.DockEdge, isSide(a.cfg.DockEdge), false)
+	if a.cfg.DockMode == "reserved" {
+		if a.cfg.AutoHide {
+			a.cfg.AutoHide = false
+			_ = settings.Save(a.paths.Settings, a.cfg)
+		}
+		a.baseWork = &work
+		workScale := native.WindowDpiScale(uintptr(a.mw.Handle()))
+		if native.RegisterAppBar(uintptr(a.mw.Handle())) {
+			a.appbar = true
+			_, _ = native.SetAppBar(uintptr(a.mw.Handle()), a.cfg.DockEdge, scaleRect(rect, workScale))
+			if reported, err := native.GetWorkArea(); err == nil {
+				if autoScale := appBarAutoScale(a.cfg.DockEdge, reported, rect); autoScale > 1.05 && autoScale < 3 {
+					workScale = autoScale
+					_, _ = native.SetAppBar(uintptr(a.mw.Handle()), a.cfg.DockEdge, scaleRect(rect, workScale))
+				}
+			}
+		}
+		a.workScale = workScale
+		work := work
+		switch a.cfg.DockEdge {
+		case "top":
+			work.Top = rect.Bottom
+		case "bottom":
+			work.Bottom = rect.Top
+		case "left":
+			work.Left = rect.Right
+		case "right":
+			work.Right = rect.Left
+		}
+		_ = native.SetWorkArea(scaleRect(work, workScale))
+	} else if a.cfg.AutoHide && isSide(a.cfg.DockEdge) {
+		_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
+		a.mw.Hide()
+		native.SetDockBoundsHidden(uintptr(a.mw.Handle()), rect)
+		a.revealed = false
+		a.invalidate()
+		return
+	} else if a.cfg.AutoHide {
+		rect = dockRect(full, work, a.cfg.DockEdge, isSide(a.cfg.DockEdge), true)
+	}
+	_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
+	native.SetDockBoundsVisible(uintptr(a.mw.Handle()), rect)
+	a.revealed = true
+	a.invalidate()
+}
+
+func (a *App) unregisterAppBar() {
+	if a.appbar && a.mw != nil && !a.mw.IsDisposed() {
+		native.RemoveAppBar(uintptr(a.mw.Handle()))
+		a.appbar = false
+	}
+	if a.baseWork != nil {
+		scale := a.workScale
+		if scale <= 0 {
+			scale = 1
+		}
+		_ = native.SetWorkArea(scaleRect(*a.baseWork, scale))
+		a.baseWork = nil
+		a.workScale = 1
+	}
+}
+
+func (a *App) setStatusVisible(visible bool) {
+	a.mu.Lock()
+	a.visible = visible
+	a.mu.Unlock()
+	if visible {
+		a.mw.Show()
+		a.applyDock()
+		a.refreshOnce()
+	} else {
+		a.unregisterAppBar()
+		full := native.PrimaryBounds()
+		work, err := native.GetWorkArea()
+		if err != nil {
+			work = full
+		}
+		rect := dockRect(full, work, a.cfg.DockEdge, isSide(a.cfg.DockEdge), false)
+		a.mw.Hide()
+		native.SetDockBoundsHidden(uintptr(a.mw.Handle()), rect)
+	}
+}
+
+func (a *App) isVisible() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.visible
+}
+
+func (a *App) hoverLoop() {
+	ticker := time.NewTicker(120 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			if a.cfg.DockMode != "overlay" || !a.cfg.AutoHide || a.mw == nil || a.mw.IsDisposed() {
+				continue
+			}
+			pos := native.CursorPosition()
+			full := native.PrimaryBounds()
+			work, err := native.GetWorkArea()
+			if err != nil {
+				work = full
+			}
+			near := false
+			switch a.cfg.DockEdge {
+			case "top":
+				near = pos.Y >= work.Top && pos.Y <= work.Top+4
+			case "bottom":
+				near = pos.Y >= work.Bottom-4 && pos.Y <= full.Bottom
+			case "left":
+				near = pos.X >= full.Left && pos.X <= work.Left+4
+			case "right":
+				near = pos.X >= work.Right-4 && pos.X <= full.Right
+			}
+			side := isSide(a.cfg.DockEdge)
+			if side {
+				rect := dockRect(full, work, a.cfg.DockEdge, true, false)
+				if a.revealed {
+					extended := walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)}
+					if a.cfg.DockEdge == "right" {
+						extended.X -= 40
+						extended.Width = int(full.Right) - extended.X
+					} else {
+						extended.X = int(full.Left)
+						extended.Width = int(rect.Right) - extended.X + 40
+					}
+					if !contains(extended, walk.Point{X: int(pos.X), Y: int(pos.Y)}) {
+						native.SetDockBoundsHidden(uintptr(a.mw.Handle()), rect)
+						a.revealed = false
+					}
+					continue
+				}
+				if near {
+					native.SetDockBoundsVisible(uintptr(a.mw.Handle()), rect)
+					a.revealed = true
+					a.invalidate()
+				}
+				continue
+			}
+			a.mw.Synchronize(func() {
+				rect := dockRect(full, work, a.cfg.DockEdge, false, !near)
+				_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
+			})
+			native.WakeWindow(uintptr(a.mw.Handle()))
+		}
+	}
+}
+
+func (a *App) showBandPicker(card quota.Card) {
+	if len(card.AllBands) == 0 {
+		if card.Message != "" {
+			walk.MsgBox(a.mw, card.Name, card.Message, walk.MsgBoxIconInformation)
+		}
+		return
+	}
+	dlg, err := walk.NewDialogWithFixedSize(a.mw)
+	if err != nil {
+		return
+	}
+	defer dlg.Dispose()
+	_ = dlg.SetTitle(card.Name + " visible rows")
+	_ = dlg.SetClientSize(walk.Size{Width: 420, Height: 360})
+	layout := walk.NewVBoxLayout()
+	_ = layout.SetMargins(walk.Margins{HNear: 12, VNear: 12, HFar: 12, VFar: 12})
+	_ = layout.SetSpacing(7)
+	_ = dlg.SetLayout(layout)
+	checks := map[string]*walk.CheckBox{}
+	hidden := settings.HiddenSet(a.cfg, card.SnapshotKey)
+	for _, band := range card.AllBands {
+		cb, _ := walk.NewCheckBox(dlg)
+		_ = cb.SetText(band.Caption)
+		cb.SetChecked(!hidden[band.Key])
+		checks[band.Key] = cb
+	}
+	buttons, _ := walk.NewComposite(dlg)
+	bl := walk.NewHBoxLayout()
+	_ = buttons.SetLayout(bl)
+	save, _ := walk.NewPushButton(buttons)
+	_ = save.SetText("OK")
+	cancel, _ := walk.NewPushButton(buttons)
+	_ = cancel.SetText("Cancel")
+	save.Clicked().Attach(func() {
+		next := settings.HiddenSet(a.cfg, card.SnapshotKey)
+		for k := range next {
+			delete(next, k)
+		}
+		for key, cb := range checks {
+			if !cb.Checked() {
+				next[key] = true
+			}
+		}
+		if err := settings.Save(a.paths.Settings, a.cfg); err != nil {
+			a.log.Printf("Failed to save settings: %v", err)
+		}
+		dlg.Accept()
+		a.refreshOnce()
+	})
+	cancel.Clicked().Attach(func() { dlg.Cancel() })
+	_ = dlg.SetDefaultButton(save)
+	_ = dlg.SetCancelButton(cancel)
+	dlg.Run()
+}
+
+func (a *App) showSettingsDialog() {
+	dlg, err := walk.NewDialogWithFixedSize(a.mw)
+	if err != nil {
+		return
+	}
+	defer dlg.Dispose()
+	_ = dlg.SetTitle("LimitDock Settings")
+	_ = dlg.SetClientSize(walk.Size{Width: 620, Height: 520})
+	root := walk.NewVBoxLayout()
+	_ = root.SetMargins(walk.Margins{HNear: 14, VNear: 14, HFar: 14, VFar: 14})
+	_ = root.SetSpacing(8)
+	_ = dlg.SetLayout(root)
+
+	mode := combo(dlg, "Display mode", []string{"reserved", "overlay"}, a.cfg.DockMode)
+	edge := combo(dlg, "Dock edge", []string{"bottom", "top", "left", "right"}, a.cfg.DockEdge)
+	startup := checkbox(dlg, "Start LimitDock when Windows starts", native.StartupEnabled())
+	slide := checkbox(dlg, "Slide away when overlay is unpinned", a.cfg.AutoHide)
+	refresh := number(dlg, "Refresh seconds", float64(a.cfg.RefreshSeconds), 5, 600)
+	maxBands := number(dlg, "Visible rows per card", float64(a.cfg.GaugeMaxBands), 1, 4)
+	warn := number(dlg, "Warn when used percent reaches", float64(a.cfg.GaugeWarnPercent), 1, 100)
+	crit := number(dlg, "Critical when used percent reaches", float64(a.cfg.GaugeCritPercent), 1, 100)
+	agEnabled := checkbox(dlg, "Enable Antigravity local footprint settings", a.cfg.Antigravity.Enabled)
+	subtitle := text(dlg, "Antigravity subtitle", a.cfg.Antigravity.Subtitle)
+	dataDir := text(dlg, "Override Antigravity / Gemini workspace path", a.cfg.Antigravity.DataDir)
+	binary := text(dlg, "Override Gemini Antigravity binary", a.cfg.Antigravity.BinaryPath)
+
+	buttons, _ := walk.NewComposite(dlg)
+	bl := walk.NewHBoxLayout()
+	_ = buttons.SetLayout(bl)
+	save, _ := walk.NewPushButton(buttons)
+	_ = save.SetText("Save")
+	cancel, _ := walk.NewPushButton(buttons)
+	_ = cancel.SetText("Cancel")
+	save.Clicked().Attach(func() {
+		a.cfg.DockMode = strings.ToLower(strings.TrimSpace(mode.Text()))
+		a.cfg.DockEdge = strings.ToLower(strings.TrimSpace(edge.Text()))
+		a.cfg.StartWithWindows = startup.Checked()
+		a.cfg.AutoHide = slide.Checked()
+		a.cfg.RefreshSeconds = int(refresh.Value())
+		a.cfg.GaugeMaxBands = int(maxBands.Value())
+		a.cfg.GaugeWarnPercent = int(warn.Value())
+		a.cfg.GaugeCritPercent = int(crit.Value())
+		a.cfg.Antigravity.Enabled = agEnabled.Checked()
+		a.cfg.Antigravity.Subtitle = strings.TrimSpace(subtitle.Text())
+		a.cfg.Antigravity.DataDir = strings.TrimSpace(dataDir.Text())
+		a.cfg.Antigravity.BinaryPath = strings.TrimSpace(binary.Text())
+		a.cfg.Normalize()
+		if err := settings.Save(a.paths.Settings, a.cfg); err != nil {
+			walk.MsgBox(dlg, "LimitDock", err.Error(), walk.MsgBoxIconError)
+			return
+		}
+		if err := native.SetStartupEnabled(a.paths.Root, a.cfg.StartWithWindows); err != nil {
+			walk.MsgBox(dlg, "LimitDock", err.Error(), walk.MsgBoxIconWarning)
+		}
+		dlg.Accept()
+		a.applyDock()
+		a.refreshOnce()
+	})
+	cancel.Clicked().Attach(func() { dlg.Cancel() })
+	_ = dlg.SetDefaultButton(save)
+	_ = dlg.SetCancelButton(cancel)
+	dlg.Run()
+}
+
+func (a *App) cleanup() {
+	a.cancel()
+	a.unregisterAppBar()
+	if a.notify != nil {
+		_ = a.notify.SetVisible(false)
+		_ = a.notify.Dispose()
+	}
+	if a.manager != nil {
+		a.manager.Stop()
+	}
+	for _, img := range a.images {
+		img.Dispose()
+	}
+	for _, f := range []*walk.Font{a.fontSmall, a.fontText, a.fontBold, a.fontMain, a.fontIcon} {
+		if f != nil {
+			f.Dispose()
+		}
+	}
+}
+
+func (a *App) setStatus(text string) {
+	a.mu.Lock()
+	a.status = text
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+func (a *App) invalidate() {
+	if a.mw == nil || a.mw.IsDisposed() || a.surface == nil || a.surface.IsDisposed() {
+		return
+	}
+	a.mw.Synchronize(func() {
+		if a.surface != nil && !a.surface.IsDisposed() {
+			_ = a.surface.Invalidate()
+		}
+	})
+	native.WakeWindow(uintptr(a.mw.Handle()))
+}
+
+func (a *App) loadBitmap(name string) *walk.Bitmap {
+	base := strings.TrimSuffix(name, ".png") + ".png"
+	if img := a.images[base]; img != nil {
+		return img
+	}
+	for _, path := range []string{
+		filepath.Join(a.paths.IconDir, base),
+		filepath.Join(a.paths.IconDir, "Codex.png"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		img, err := walk.NewBitmapFromFile(path)
+		if err == nil {
+			a.images[base] = img
+			return img
+		}
+	}
+	return nil
+}
+
+func combo(parent walk.Container, label string, values []string, current string) *walk.ComboBox {
+	addLabel(parent, label)
+	cb, _ := walk.NewComboBox(parent)
+	_ = cb.SetModel(values)
+	idx := 0
+	for i, v := range values {
+		if v == current {
+			idx = i
+			break
+		}
+	}
+	_ = cb.SetCurrentIndex(idx)
+	return cb
+}
+
+func checkbox(parent walk.Container, label string, checked bool) *walk.CheckBox {
+	cb, _ := walk.NewCheckBox(parent)
+	_ = cb.SetText(label)
+	cb.SetChecked(checked)
+	return cb
+}
+
+func number(parent walk.Container, label string, value, min, maxv float64) *walk.NumberEdit {
+	addLabel(parent, label)
+	n, _ := walk.NewNumberEdit(parent)
+	_ = n.SetRange(min, maxv)
+	_ = n.SetDecimals(0)
+	_ = n.SetIncrement(1)
+	_ = n.SetValue(value)
+	return n
+}
+
+func text(parent walk.Container, label, value string) *walk.TextEdit {
+	addLabel(parent, label)
+	t, _ := walk.NewTextEdit(parent)
+	t.SetCompactHeight(true)
+	_ = t.SetText(value)
+	return t
+}
+
+func addLabel(parent walk.Container, text string) {
+	l, _ := walk.NewLabel(parent)
+	_ = l.SetText(text)
+	l.SetTextColor(themeMuted)
+}
+
+func dockRect(full native.Rect, work native.Rect, edge string, side bool, hidden bool) native.Rect {
+	width := int32(350)
+	height := int32(94)
+	if side {
+		height = work.Bottom - work.Top
+	} else {
+		width = work.Right - work.Left
+	}
+	switch edge {
+	case "top":
+		y := work.Top + 2
+		if hidden {
+			y = full.Top - height - 2
+		}
+		return native.Rect{Left: work.Left, Top: y, Right: work.Left + width, Bottom: y + height}
+	case "left":
+		x := work.Left + 2
+		if hidden {
+			x = full.Left - width - 2
+		}
+		return native.Rect{Left: x, Top: work.Top, Right: x + width, Bottom: work.Top + height}
+	case "right":
+		x := work.Right - width - 2
+		if hidden {
+			x = full.Right + 2
+		}
+		return native.Rect{Left: x, Top: work.Top, Right: x + width, Bottom: work.Top + height}
+	default:
+		y := work.Bottom - height - 2
+		if hidden {
+			y = full.Bottom + 2
+		}
+		return native.Rect{Left: work.Left, Top: y, Right: work.Left + width, Bottom: y + height}
+	}
+}
+
+func scaleRect(rect native.Rect, scale float64) native.Rect {
+	if scale <= 0 {
+		scale = 1
+	}
+	return native.Rect{
+		Left:   int32(math.Round(float64(rect.Left) * scale)),
+		Top:    int32(math.Round(float64(rect.Top) * scale)),
+		Right:  int32(math.Round(float64(rect.Right) * scale)),
+		Bottom: int32(math.Round(float64(rect.Bottom) * scale)),
+	}
+}
+
+func appBarAutoScale(edge string, reported native.Rect, desired native.Rect) float64 {
+	switch edge {
+	case "bottom":
+		if reported.Bottom > 0 && reported.Bottom < desired.Top-4 {
+			return float64(desired.Top) / float64(reported.Bottom)
+		}
+	case "top":
+		if reported.Top > 0 && reported.Top < desired.Bottom-4 {
+			return float64(desired.Bottom) / float64(reported.Top)
+		}
+	case "left":
+		if reported.Left > 0 && reported.Left < desired.Right-4 {
+			return float64(desired.Right) / float64(reported.Left)
+		}
+	case "right":
+		if reported.Right > 0 && reported.Right < desired.Left-4 {
+			return float64(desired.Left) / float64(reported.Right)
+		}
+	}
+	return 1
+}
+
+func brush(c walk.Color) *walk.SolidColorBrush {
+	b, _ := walk.NewSolidColorBrush(c)
+	return b
+}
+
+func levelColor(level string) walk.Color {
+	switch level {
+	case "critical":
+		return themeCriticalBack
+	case "warn":
+		return themeWarnBack
+	case "status":
+		return themeStatusBack
+	case "info":
+		return themeInfoBack
+	default:
+		return themeOkBack
+	}
+}
+
+func inset(r walk.Rectangle, x, y int) walk.Rectangle {
+	return walk.Rectangle{X: r.X + x, Y: r.Y + y, Width: max(0, r.Width-x*2), Height: max(0, r.Height-y*2)}
+}
+
+func contains(r walk.Rectangle, p walk.Point) bool {
+	return r.Width > 0 && r.Height > 0 && p.X >= r.X && p.X <= r.Right() && p.Y >= r.Y && p.Y <= r.Bottom()
+}
+
+func percentText(pct *float64) string {
+	if pct == nil {
+		return ""
+	}
+	if math.Abs(*pct-math.Round(*pct)) < 0.05 {
+		return fmt.Sprintf("%.0f%%", *pct)
+	}
+	return fmt.Sprintf("%.1f%%", *pct)
+}
+
+func sideCaption(band quota.Band) string {
+	caption := strings.TrimSpace(band.Caption)
+	reset := strings.TrimSpace(band.Reset)
+	if reset != "" {
+		caption = strings.TrimSpace(strings.TrimSuffix(caption, " "+reset))
+	}
+	if caption == "" {
+		caption = strings.TrimSpace(band.Window)
+	}
+	parts := strings.Fields(caption)
+	if len(parts) > 0 {
+		last := parts[len(parts)-1]
+		if strings.HasPrefix(last, "23h") || strings.HasPrefix(last, "24h") {
+			parts[len(parts)-1] = "1d"
+			caption = strings.Join(parts, " ")
+		}
+	}
+	return caption
+}
+
+func isSide(edge string) bool {
+	return edge == "left" || edge == "right"
+}
+
+var (
+	themeBar          = walk.RGB(24, 27, 31)
+	themePanel        = walk.RGB(35, 39, 45)
+	themeFore         = walk.RGB(242, 244, 247)
+	themeMuted        = walk.RGB(171, 181, 191)
+	themeAccent       = walk.RGB(126, 211, 194)
+	themeOkBack       = walk.RGB(34, 43, 44)
+	themeInfoBack     = walk.RGB(34, 40, 52)
+	themeStatusBack   = walk.RGB(43, 46, 52)
+	themeWarnBack     = walk.RGB(62, 48, 31)
+	themeWarnFore     = walk.RGB(255, 211, 138)
+	themeCriticalBack = walk.RGB(66, 35, 43)
+
+	themeSideBack        = walk.RGB(238, 238, 238)
+	themeSideTop         = walk.RGB(242, 242, 242)
+	themeSideCard        = walk.RGB(255, 255, 255)
+	themeSideLine        = walk.RGB(224, 224, 224)
+	themeSideText        = walk.RGB(0, 0, 0)
+	themeSideMuted       = walk.RGB(80, 80, 80)
+	themeSideBlue        = walk.RGB(0, 82, 204)
+	themeSideIcon        = walk.RGB(70, 70, 70)
+	themeGaugeTrackLight = walk.RGB(245, 245, 245)
+	themeGaugeBorder     = walk.RGB(128, 128, 128)
+	themeGaugeFillLight  = walk.RGB(0, 128, 0)
+	themeCodexIcon       = walk.RGB(0, 166, 118)
+	themeGeminiIcon      = walk.RGB(92, 113, 255)
+	themeIconFore        = walk.RGB(255, 255, 255)
+)
