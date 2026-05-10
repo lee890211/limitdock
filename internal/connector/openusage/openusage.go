@@ -11,9 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/windows"
 
 	"limitdock/internal/readmodel"
 )
@@ -78,6 +81,7 @@ func (m *Manager) EnsureBinary(ctx context.Context, noDownload bool) error {
 }
 
 func (m *Manager) Start() error {
+	m.stopPIDFileProcess("Stopping stale OpenUsage.sh daemon")
 	_ = os.Remove(m.SocketPath)
 	if err := os.MkdirAll(filepath.Dir(m.SocketPath), 0o755); err != nil {
 		return err
@@ -146,10 +150,57 @@ func (m *Manager) Stop() {
 		}
 		_ = m.cmd.Process.Kill()
 	}
+	m.stopPIDFileProcess("Stopping OpenUsage.sh daemon from pid file")
 	_ = os.Remove(m.SocketPath)
 	if m.DaemonPID != "" {
 		_ = os.Remove(m.DaemonPID)
 	}
+}
+
+func (m *Manager) stopPIDFileProcess(message string) {
+	if m.DaemonPID == "" {
+		return
+	}
+	raw, err := os.ReadFile(m.DaemonPID)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		return
+	}
+	if m.cmd != nil && m.cmd.Process != nil && m.cmd.Process.Pid == pid {
+		return
+	}
+	if m.Log != nil {
+		m.Log.Printf("%s pid=%d", message, pid)
+	}
+	if !m.processMatchesExe(pid) {
+		if m.Log != nil {
+			m.Log.Printf("Skipped stale OpenUsage.sh pid=%d because executable path did not match", pid)
+		}
+		return
+	}
+	if p, err := os.FindProcess(pid); err == nil {
+		_ = p.Kill()
+	}
+}
+
+func (m *Manager) processMatchesExe(pid int) bool {
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(handle)
+
+	buf := make([]uint16, windows.MAX_PATH)
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(handle, 0, &buf[0], &size); err != nil {
+		return false
+	}
+	got := filepath.Clean(windows.UTF16ToString(buf[:size]))
+	want := filepath.Clean(m.ExePath)
+	return strings.EqualFold(got, want)
 }
 
 type githubRelease struct {

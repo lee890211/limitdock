@@ -90,11 +90,11 @@ type App struct {
 	log     *logging.Logger
 	manager *openusage.Manager
 
-	mw          *walk.MainWindow
-	surface     *walk.CustomWidget
-	notify      *walk.NotifyIcon
-	trayHide    *walk.Action
-	trayShow    *walk.Action
+	mw       *walk.MainWindow
+	surface  *walk.CustomWidget
+	notify   *walk.NotifyIcon
+	trayHide *walk.Action
+	trayShow *walk.Action
 
 	fontSmall *walk.Font
 	fontBold  *walk.Font
@@ -1442,12 +1442,15 @@ func (p *themePicker) selectAt(x, width int) {
 	if width <= 0 {
 		width = 112
 	}
-	if x >= width/2 {
+	rects := p.rects(walk.Rectangle{Width: width, Height: 42})
+	if contains(rects["night"], walk.Point{X: x, Y: rects["night"].Y + 1}) {
 		p.value = "night"
-	} else {
+	} else if contains(rects["light"], walk.Point{X: x, Y: rects["light"].Y + 1}) {
 		p.value = "light"
 	}
-	_ = p.widget.Invalidate()
+	if p.widget != nil {
+		_ = p.widget.Invalidate()
+	}
 }
 
 func (p *themePicker) paint(canvas *walk.Canvas, update walk.Rectangle) error {
@@ -1579,16 +1582,17 @@ func (p *edgePicker) selectAt(x, width int) {
 	if width <= 0 {
 		width = 154
 	}
-	edges := []string{"bottom", "left", "top", "right"}
-	idx := x * len(edges) / width
-	if idx < 0 {
-		idx = 0
+	rects := p.rects(walk.Rectangle{Width: width, Height: 48})
+	pt := walk.Point{X: x, Y: 3}
+	for _, edge := range []string{"bottom", "left", "top", "right"} {
+		if contains(rects[edge], pt) {
+			p.value = edge
+			break
+		}
 	}
-	if idx >= len(edges) {
-		idx = len(edges) - 1
+	if p.widget != nil {
+		_ = p.widget.Invalidate()
 	}
-	p.value = edges[idx]
-	_ = p.widget.Invalidate()
 }
 
 func (p *edgePicker) paint(canvas *walk.Canvas, update walk.Rectangle) error {

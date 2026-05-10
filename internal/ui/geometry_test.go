@@ -209,6 +209,30 @@ func TestSideCardHeightFitsFourRows(t *testing.T) {
 	}
 }
 
+func TestThemePickerHitTestingUsesPaintedOptions(t *testing.T) {
+	picker := &themePicker{value: "light"}
+	picker.selectAt(82, 632)
+	if picker.Value() != "night" {
+		t.Fatalf("selectAt night icon = %q, want night", picker.Value())
+	}
+	picker.selectAt(20, 632)
+	if picker.Value() != "light" {
+		t.Fatalf("selectAt light icon = %q, want light", picker.Value())
+	}
+}
+
+func TestEdgePickerHitTestingUsesPaintedOptions(t *testing.T) {
+	picker := &edgePicker{value: "bottom"}
+	picker.selectAt(250, 632)
+	if picker.Value() != "right" {
+		t.Fatalf("selectAt right icon = %q, want right", picker.Value())
+	}
+	picker.selectAt(500, 632)
+	if picker.Value() != "right" {
+		t.Fatalf("click outside painted options changed value to %q", picker.Value())
+	}
+}
+
 func containsRect(outer, inner walk.Rectangle) bool {
 	return inner.X >= outer.X &&
 		inner.Y >= outer.Y &&
