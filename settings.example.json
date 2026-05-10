@@ -3,6 +3,7 @@
   "dockMode": "reserved",
   "dockEdge": "bottom",
   "theme": "light",
+  "overlayOpacity": 100,
   "startWithWindows": false,
   "hiddenQuotaBands": {},
   "gaugeMaxBands": 4,

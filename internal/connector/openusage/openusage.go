@@ -63,7 +63,16 @@ func (m *Manager) EnsureBinary(ctx context.Context, noDownload bool) error {
 		return err
 	}
 	if !fileExists(m.ExePath) {
-		return fmt.Errorf("downloaded OpenUsage.sh archive did not contain expected binary: %s", m.ExePath)
+		found, err := findOpenUsageExe(m.ExtractDir)
+		if err != nil {
+			return fmt.Errorf("downloaded OpenUsage.sh archive did not contain expected binary: %s", m.ExePath)
+		}
+		if err := os.MkdirAll(filepath.Dir(m.ExePath), 0o755); err != nil {
+			return err
+		}
+		if err := copyFile(found, m.ExePath); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -143,35 +152,66 @@ func (m *Manager) Stop() {
 	}
 }
 
+type githubRelease struct {
+	TagName    string        `json:"tag_name"`
+	Draft      bool          `json:"draft"`
+	Prerelease bool          `json:"prerelease"`
+	Assets     []githubAsset `json:"assets"`
+}
+
+type githubAsset struct {
+	Name string `json:"name"`
+	URL  string `json:"browser_download_url"`
+}
+
 func latestWindowsAsset(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/janekbaraniewski/openusage/releases/latest", nil)
-	if err != nil {
+	var latest githubRelease
+	if err := githubGetJSON(ctx, "https://api.github.com/repos/janekbaraniewski/openusage/releases/latest", &latest); err != nil {
 		return "", err
+	}
+	if url := windowsAssetURL(latest.Assets); url != "" {
+		return url, nil
+	}
+	var releases []githubRelease
+	if err := githubGetJSON(ctx, "https://api.github.com/repos/janekbaraniewski/openusage/releases?per_page=12", &releases); err != nil {
+		return "", err
+	}
+	for _, release := range releases {
+		if release.Draft || release.Prerelease {
+			continue
+		}
+		if url := windowsAssetURL(release.Assets); url != "" {
+			return url, nil
+		}
+	}
+	return "", errors.New("could not find OpenUsage.sh Windows amd64 release asset in recent releases")
+}
+
+func githubGetJSON(ctx context.Context, url string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
 	}
 	req.Header.Set("User-Agent", "LimitDock")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("GitHub release status %s", resp.Status)
+		return fmt.Errorf("GitHub release status %s", resp.Status)
 	}
-	var release struct {
-		Assets []struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-		} `json:"assets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", err
-	}
-	for _, asset := range release.Assets {
-		if strings.Contains(asset.Name, "windows_amd64") && strings.HasSuffix(asset.Name, ".zip") {
-			return asset.URL, nil
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func windowsAssetURL(assets []githubAsset) string {
+	for _, asset := range assets {
+		name := strings.ToLower(asset.Name)
+		if strings.Contains(name, "windows") && strings.Contains(name, "amd64") && strings.HasSuffix(name, ".zip") {
+			return asset.URL
 		}
 	}
-	return "", errors.New("could not find OpenUsage.sh windows_amd64 release asset")
+	return ""
 }
 
 func downloadFile(ctx context.Context, url, path string) error {
@@ -251,6 +291,44 @@ func unzip(src, dst string) error {
 		}
 	}
 	return nil
+}
+
+func findOpenUsageExe(root string) (string, error) {
+	var found string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Base(path), "openusage.exe") {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if found == "" {
+		return "", os.ErrNotExist
+	}
+	return found, nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func fileExists(path string) bool {

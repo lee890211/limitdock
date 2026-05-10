@@ -1,0 +1,7 @@
+interface:
+  display_name: "LimitDock Manual Update"
+  short_description: "Capture safe LimitDock UI assets and refresh manuals."
+  default_prompt: "Use $limitdock-manual-update to refresh LimitDock documentation screenshots and guide text with privacy-safe captures."
+
+policy:
+  allow_implicit_invocation: true

@@ -13,6 +13,7 @@ type Settings struct {
 	DockMode         string                     `json:"dockMode"`
 	DockEdge         string                     `json:"dockEdge"`
 	Theme            string                     `json:"theme"`
+	OverlayOpacity   int                        `json:"overlayOpacity"`
 	StartWithWindows bool                       `json:"startWithWindows"`
 	HiddenQuotaBands map[string]map[string]bool `json:"hiddenQuotaBands"`
 	GaugeMaxBands    int                        `json:"gaugeMaxBands"`
@@ -27,6 +28,7 @@ func Defaults() Settings {
 		DockMode:         "reserved",
 		DockEdge:         "bottom",
 		Theme:            "light",
+		OverlayOpacity:   100,
 		StartWithWindows: false,
 		HiddenQuotaBands: map[string]map[string]bool{},
 		GaugeMaxBands:    4,
@@ -80,6 +82,15 @@ func (s *Settings) Normalize() {
 	case "light", "night":
 	default:
 		s.Theme = d.Theme
+	}
+	if s.OverlayOpacity == 0 {
+		s.OverlayOpacity = d.OverlayOpacity
+	}
+	if s.OverlayOpacity < 35 {
+		s.OverlayOpacity = 35
+	}
+	if s.OverlayOpacity > 100 {
+		s.OverlayOpacity = 100
 	}
 	if s.HiddenQuotaBands == nil {
 		s.HiddenQuotaBands = map[string]map[string]bool{}

@@ -38,14 +38,20 @@ Edges:
 - The visible window rect matches the intended dock edge and logical size.
 - Reserved mode changes only the selected edge of the Windows work area.
 - Overlay pinned does not change the Windows work area.
+- In `bottom/overlay` and `top/overlay`, the ribbon must stay inside the Windows work area and must not cover the taskbar/menu region.
 - Overlay unpinned reveals on edge hover and hides after the cursor leaves.
 - When the bar is visible, clicks hit LimitDock, not the window behind it.
+- For `left/overlay/autoHide=true`, use a Windows hit-test (`WindowFromPoint` and `GetAncestor`) before clicking the gear, pin, or Updated areas. The root window under the cursor must belong to `LimitDock.exe`; otherwise the run fails even if the bar is visible on screen.
 - Settings opens in front.
+- Settings action buttons are left-aligned, not centered.
+- Settings includes OpenUsage/log diagnostics controls: OpenUsage settings, OpenUsage folder, logs folder, LimitDock log, and copy diagnostics.
 - The pin/unpin button toggles `autoHide`.
+- In left overlay, explicitly test both directions: pinned -> click pin -> hidden/unpinned, then edge hover -> revealed -> click pin -> pinned/visible.
 - Tray `Hide Status Bar` restores the work area and pauses reveal.
 - Tray `Show Status Bar` restores the saved mode and edge.
 - The `Updated` panel click triggers an immediate refresh.
 - `light` and `night` themes both render readable text.
+- Overlay opacity preview changes the visible bar while Settings is open. Cancel restores the previous opacity; Save persists the new `overlayOpacity`.
 - A wide ribbon can render up to five provider cards when five cards exist.
 
 ## Provider Checks
@@ -60,4 +66,3 @@ Inspect the local machine for installed or running agents and verify expected so
 ## Reporting
 
 Report exact edge/mode pairs that passed or failed. Include measured window rect and work-area rect for docking failures.
-

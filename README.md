@@ -2,7 +2,7 @@
 
 LimitDock is a compact Windows desktop dock that shows remaining agent quota at a glance. It turns local usage/quota output into an always-visible desktop ribbon, focused on one thing: how much model quota is left, and when it resets.
 
-![LimitDock top or bottom ribbon](docs/images/manual-ribbon.png)
+![LimitDock night ribbon](docs/images/manual-ribbon-night.png)
 
 ## What It Shows
 
@@ -14,6 +14,8 @@ LimitDock is a compact Windows desktop dock that shows remaining agent quota at 
 - Exhausted or 0 percent rows, unless the user explicitly hides them.
 
 LimitDock intentionally does not show spend, token totals, request counts, tool-call counts, or generic activity rows.
+
+Bundled provider icons are neutral LimitDock badges, not official brand logos. If you replace files under `assets/icons` with official brand assets, make sure the usage is allowed by that provider's brand guidelines and trademark terms.
 
 LimitDock is built on [openusage](https://github.com/janekbaraniewski/openusage). It is not a replacement for openusage: provider discovery, telemetry, and the read model belong there. LimitDock supervises the openusage daemon, reads its local read-model endpoint, normalizes quota-like rows, and renders them as a native Windows dock. Many thanks to the openusage maintainers for building the local usage/quota foundation this project depends on.
 
@@ -41,13 +43,35 @@ Use `bottom` or `top` for a horizontal ribbon. Each provider card shows one or m
 
 The `Updated` panel is clickable. Click it to force an immediate refresh even if the automatic refresh interval has not elapsed.
 
-![LimitDock top or bottom ribbon](docs/images/manual-ribbon.png)
+Light theme:
+
+![LimitDock light ribbon](docs/images/manual-ribbon-light.png)
+
+Night theme:
+
+![LimitDock night ribbon](docs/images/manual-ribbon-night.png)
 
 ### Side Dock
 
 Use `left` or `right` for a vertical strip. Provider cards stack vertically and each quota row gets its own line.
 
-![LimitDock left or right dock](docs/images/manual-side-dock.png)
+Light theme:
+
+![LimitDock light side dock](docs/images/manual-side-dock-light.png)
+
+Night theme:
+
+![LimitDock night side dock](docs/images/manual-side-dock-night.png)
+
+### Overlay Opacity And Auto Slide
+
+Overlay opacity can be previewed live from Settings. For documentation captures, LimitDock is placed over a neutral backdrop so no desktop or private window content is visible through transparency.
+
+![LimitDock overlay opacity](docs/images/manual-overlay-opacity.png)
+
+When auto slide is enabled in overlay mode, the dock keeps only a thin edge strip visible while unpinned and slides back in on hover.
+
+![LimitDock slide in and out](docs/images/manual-slide-in-out.gif)
 
 ### Visible Row Picker
 
@@ -61,7 +85,7 @@ Right-click the tray icon:
 
 - `Hide Status Bar`: hides the dock, unregisters reserved mode, restores the Windows work area, disables hover reveal, and pauses refresh. Hide is session-only.
 - `Show Status Bar`: restores the saved mode, edge, and pin state, then refreshes.
-- `Settings`: opens docking, theme, refresh, startup, and threshold settings.
+- `Settings`: opens docking, theme, refresh, startup, threshold, OpenUsage, and log/diagnostic controls.
 - `Exit`: closes LimitDock and stops the managed openusage daemon.
 
 ### Docking
@@ -71,9 +95,9 @@ LimitDock supports two display modes:
 - `reserved`: the default first-run mode. It registers a Windows appbar and applies a matching work area so maximized windows leave room for the dock.
 - `overlay`: floats above other windows. The pin icon appears only in overlay mode.
 
-Edges are `bottom`, `top`, `left`, and `right`. You can change display mode and edge from `Settings`; docking choices are stored in local `settings.json`.
+Edges are `bottom`, `top`, `left`, and `right`. `Settings` shows them as four visual screen-edge buttons in `bottom`, `left`, `top`, `right` order instead of a dropdown so the selected dock side is easier to recognize. Docking choices are stored in local `settings.json`.
 
-`Night mode` in `Settings` switches between the light and night themes. `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
+The `Theme` row uses two visual day/night buttons. `Overlay opacity %` previews transparency live in overlay mode; Cancel restores the previous value and Save persists it. `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
 
 Antigravity support is quota-only and automatic. If OpenUsage does not expose Antigravity, LimitDock tries its custom reader and renders a card only when it can read local percent/reset or prompt-credit quota data. It does not add an installation/status placeholder card.
 

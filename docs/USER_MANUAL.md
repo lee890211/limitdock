@@ -20,7 +20,13 @@ LimitDock starts the bundled or downloaded OpenUsage.sh daemon, reads the local 
 
 ## Top Or Bottom Ribbon
 
-![Top or bottom ribbon](images/manual-ribbon.png)
+Light theme:
+
+![Top or bottom ribbon in light theme](images/manual-ribbon-light.png)
+
+Night theme:
+
+![Top or bottom ribbon in night theme](images/manual-ribbon-night.png)
 
 The ribbon is best for wide monitors. Each provider card shows:
 
@@ -44,9 +50,25 @@ Checked rows are visible. Unchecked rows are hidden. Hidden rows stay in `settin
 
 ## Left Or Right Dock
 
-![Left or right dock](images/manual-side-dock.png)
+Light theme:
+
+![Left or right dock in light theme](images/manual-side-dock-light.png)
+
+Night theme:
+
+![Left or right dock in night theme](images/manual-side-dock-night.png)
 
 Side docking is useful when a horizontal ribbon would take too much vertical space. Provider cards stack vertically, and each quota row gets its own line. Model labels are shortened before reset countdown or remaining percent are hidden.
+
+## Overlay Opacity And Auto Slide
+
+Overlay opacity is previewed live in `Settings`. Documentation captures use a neutral backdrop so transparency does not reveal the desktop or private windows.
+
+![Overlay opacity preview](images/manual-overlay-opacity.png)
+
+When `Auto slide in overlay mode` is enabled, an unpinned overlay dock collapses to a thin edge strip and slides back in when hovered.
+
+![Slide-in and slide-out behavior](images/manual-slide-in-out.gif)
 
 ## Tray Controls
 
@@ -54,7 +76,7 @@ Right-click the tray icon:
 
 - `Hide Status Bar`: hides the dock, unregisters reserved appbar space, restores the Windows work area, disables hover reveal, and pauses refresh.
 - `Show Status Bar`: shows the dock again using saved settings.
-- `Settings`: opens LimitDock docking, theme, refresh, startup, and threshold settings.
+- `Settings`: opens LimitDock docking, theme, refresh, startup, threshold, OpenUsage, and log/diagnostic controls.
 - `Exit`: closes LimitDock and stops the managed OpenUsage daemon.
 
 Hide is not persisted. A fresh launch shows the dock again.
@@ -75,7 +97,13 @@ Dock edges:
 - `left`
 - `right`
 
-Dock mode, dock edge, theme, auto-slide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time. `Night mode` toggles between the `light` and `night` themes. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
+Dock edge is selected with four visual screen-edge buttons in `Settings` instead of a dropdown. The order is `bottom`, `left`, `top`, `right`.
+
+Dock mode, dock edge, theme, overlay opacity, auto-slide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time. The `Theme` row uses two visual day/night buttons to switch between the `light` and `night` themes. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
+
+`Overlay opacity %` applies only in overlay mode and can be set from 35 to 100. Dragging it previews the opacity immediately. `Cancel` restores the previous opacity, and `Save` persists it.
+
+The settings window also includes `OpenUsage / logs` controls. Use them to open `%APPDATA%\openusage\settings.json`, open the OpenUsage settings folder, browse LimitDock logs, open `limitdock.log`, or copy diagnostic paths for troubleshooting. Antigravity path settings are intentionally absent because the Go version auto-detects local Antigravity quota sources.
 
 `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Clear the checkbox to remove the value. Older `LimitDock.lnk` startup shortcuts are cleaned up when this setting changes.
 

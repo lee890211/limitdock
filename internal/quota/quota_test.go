@@ -98,3 +98,17 @@ func TestHiddenBandsKeepAllBandsForPicker(t *testing.T) {
 		t.Fatalf("all bands should remain available for picker: %#v", card.AllBands)
 	}
 }
+
+func TestFormatWindowLabelConvertsLargeMinuteWindows(t *testing.T) {
+	tests := map[string]string{
+		"300m":     "5h",
+		"10080m":   "7d",
+		"PT300M":   "5h",
+		"PT10080M": "7d",
+	}
+	for input, want := range tests {
+		if got := FormatWindowLabel(input); got != want {
+			t.Fatalf("FormatWindowLabel(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

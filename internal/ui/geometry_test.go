@@ -86,6 +86,56 @@ func TestReservedWorkAreaMatchesVisibleDockEdge(t *testing.T) {
 	}
 }
 
+func TestSideOverlayDockAreaIgnoresReservedWorkArea(t *testing.T) {
+	full := native.Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	staleWork := native.Rect{Left: 352, Top: 0, Right: 1920, Bottom: 980}
+	area := dockWorkArea("overlay", "left", full, staleWork)
+	if area != full {
+		t.Fatalf("side overlay area = %#v, want full screen %#v", area, full)
+	}
+	rect := dockRect(full, area, "left", true, false)
+	if rect.Left != 2 || rect.Right != 352 {
+		t.Fatalf("left overlay rect = %#v, want screen edge width only", rect)
+	}
+	hidden := dockRect(full, area, "left", true, true)
+	if hidden.Right != -2 {
+		t.Fatalf("left overlay hidden rect = %#v, want fully offscreen", hidden)
+	}
+	autoHidden := sideOverlayHiddenRect(full, area, "left")
+	if autoHidden.Right >= full.Left {
+		t.Fatalf("left overlay auto-hidden rect = %#v, want fully hidden before monitor edge", autoHidden)
+	}
+}
+
+func TestSideOverlayHiddenRectLeavesNoVisibleStrip(t *testing.T) {
+	full := native.Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	work := full
+	left := sideOverlayHiddenRect(full, work, "left")
+	if left.Right >= full.Left {
+		t.Fatalf("left hidden rect leaves visible strip: %#v", left)
+	}
+	right := sideOverlayHiddenRect(full, work, "right")
+	if right.Left <= full.Right {
+		t.Fatalf("right hidden rect leaves visible strip: %#v", right)
+	}
+}
+
+func TestHorizontalOverlayDockAreaPreservesWorkArea(t *testing.T) {
+	full := native.Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1080}
+	work := native.Rect{Left: 0, Top: 0, Right: 1920, Bottom: 1040}
+	area := dockWorkArea("overlay", "bottom", full, work)
+	if area != work {
+		t.Fatalf("horizontal overlay area = %#v, want work area %#v", area, work)
+	}
+	rect := dockRect(full, area, "bottom", false, false)
+	if rect.Bottom > work.Bottom {
+		t.Fatalf("bottom overlay rect = %#v, should not overlap menu/taskbar area after %d", rect, work.Bottom)
+	}
+	if rect.Top != work.Bottom-dockRibbonHeight-dockEdgeGap {
+		t.Fatalf("bottom overlay top = %d, want %d", rect.Top, work.Bottom-dockRibbonHeight-dockEdgeGap)
+	}
+}
+
 func TestRibbonCardWidthFitsFiveCardsWhenAvailable(t *testing.T) {
 	const gap = 6
 	available := 1764
@@ -141,6 +191,21 @@ func TestSideBandColumnsStayOrderedAndBounded(t *testing.T) {
 	}
 	if row.gauge.Right() < rect.Right()-14 {
 		t.Fatalf("gauge right = %d, want near %d", row.gauge.Right(), rect.Right()-12)
+	}
+}
+
+func TestSideCardHeightFitsFourRows(t *testing.T) {
+	height := sideCardHeight(4)
+	rect := walk.Rectangle{X: 0, Y: 42, Width: 525, Height: height}
+	rowY := rect.Y + sideCardHeaderHeight
+	for i := 0; i < 4; i++ {
+		if rowY+18 > rect.Bottom()-5 {
+			t.Fatalf("row %d escapes side card: rowY=%d rect=%#v", i, rowY, rect)
+		}
+		rowY += sideCardRowHeight
+	}
+	if height <= sideCardHeight(2) {
+		t.Fatalf("four-row side card height %d should be taller than two-row height %d", height, sideCardHeight(2))
 	}
 }
 

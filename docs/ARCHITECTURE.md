@@ -15,6 +15,8 @@ LimitDock is a Go native Windows shell around a normalized quota read model. Ope
 
 The runtime app does not invoke external shell scripts. Startup registration, docking, tray behavior, OpenUsage process management, and work-area restore are implemented from Go.
 
+The settings dialog still exposes OpenUsage and diagnostics affordances from the legacy app: it can open `%APPDATA%\openusage\settings.json`, open the OpenUsage settings folder, browse LimitDock logs, open the app log, and copy diagnostic paths. It does not expose Antigravity path fields because Antigravity is now auto-detected by the custom reader.
+
 OpenUsage.sh owns provider discovery and telemetry for upstream-supported providers. LimitDock custom readers are intentionally narrow and quota-only; they are used for missing providers or fallbacks, not as a replacement telemetry system.
 
 ## Provider Readers
@@ -67,6 +69,7 @@ Antigravity:
 - `dockMode`
 - `dockEdge`
 - `theme`
+- `overlayOpacity`
 - `autoHide`
 - `hiddenQuotaBands`
 - `startWithWindows`
@@ -80,7 +83,7 @@ The Windows startup option is implemented as a per-user `HKCU\Software\Microsoft
 
 Reserved mode registers a shell appbar for the selected edge and also applies a Windows work area that matches the reserved bounds. This dual path is deliberate: appbar negotiation alone can be inconsistent under DPI scaling and shell edge changes.
 
-The appbar rectangle is passed to `SHAppBarMessage` in native screen pixels, while UI dimensions are kept in compact Windows logical units and clamped from the active monitor bounds. Hide and overlay transitions unregister the appbar and restore the captured work area. On exit, the app schedules a short delayed `LimitDock.exe --restore-workarea` helper run so Windows shell appbar teardown cannot leave stale reserved space behind.
+The appbar rectangle is passed to `SHAppBarMessage` in native screen pixels, while UI dimensions are kept in compact Windows logical units and clamped from the active monitor bounds. Reserved mode uses the current Windows work area. In overlay mode, left/right docks position against the full screen edge so stale reserved work-area values cannot move the floating dock, while top/bottom ribbons use the Windows work area so the taskbar/menu region remains visible. Hide and overlay transitions unregister the appbar and restore the captured work area. On exit, the app schedules a short delayed `LimitDock.exe --restore-workarea` helper run so Windows shell appbar teardown cannot leave stale reserved space behind.
 
 ## Rendering Loop
 

@@ -365,16 +365,14 @@ func FormatWindowLabel(v any) string {
 	}
 	if m := regexp.MustCompile(`^pt(\d+(?:\.\d+)?)m$`).FindStringSubmatch(s); len(m) == 2 {
 		mins, _ := strconv.ParseFloat(m[1], 64)
-		if math.Mod(mins, 60) == 0 {
-			return trimFloat(mins/60) + "h"
-		}
-		return trimFloat(mins) + "m"
+		return formatMinuteWindow(mins)
 	}
 	if m := regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*(hour|hours|h)(\s+rolling)?$`).FindStringSubmatch(s); len(m) >= 2 {
 		return trimFloatString(m[1]) + "h"
 	}
 	if m := regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*(minute|minutes|min|m)(\s+window)?$`).FindStringSubmatch(s); len(m) >= 2 {
-		return trimFloatString(m[1]) + "m"
+		mins, _ := strconv.ParseFloat(m[1], 64)
+		return formatMinuteWindow(mins)
 	}
 	if m := regexp.MustCompile(`^(\d+)\s*d(ay)?s?$`).FindStringSubmatch(s); len(m) >= 2 {
 		return m[1] + "d"
@@ -392,6 +390,20 @@ func FormatWindowLabel(v any) string {
 		return w
 	}
 	return w[:10]
+}
+
+func formatMinuteWindow(mins float64) string {
+	if mins >= 1440 && math.Mod(mins, 1440) == 0 {
+		return trimFloat(mins/1440) + "d"
+	}
+	if mins >= 60 && math.Mod(mins, 60) == 0 {
+		hours := mins / 60
+		if hours >= 24 && math.Mod(hours, 24) == 0 {
+			return trimFloat(hours/24) + "d"
+		}
+		return trimFloat(hours) + "h"
+	}
+	return trimFloat(mins) + "m"
 }
 
 func ResetShortText(snap *readmodel.Snapshot, key string, now time.Time) string {

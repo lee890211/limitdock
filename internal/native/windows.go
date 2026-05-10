@@ -117,6 +117,23 @@ func SetTopmost(hwnd uintptr) {
 	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
 }
 
+func SetWindowOpacity(hwnd uintptr, opacityPercent int) {
+	if opacityPercent <= 0 || opacityPercent >= 100 {
+		style, _, _ := procGetWindowLong.Call(hwnd, uintptr(gwlExStyle))
+		_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), style&^uintptr(wsExLayered))
+		_, _, _ = procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpFrameChanged)
+		return
+	}
+	if opacityPercent < 35 {
+		opacityPercent = 35
+	}
+	style, _, _ := procGetWindowLong.Call(hwnd, uintptr(gwlExStyle))
+	_, _, _ = procSetWindowLong.Call(hwnd, uintptr(gwlExStyle), style|uintptr(wsExLayered))
+	alpha := byte((opacityPercent * 255) / 100)
+	_, _, _ = procSetLayeredWindowAttributes.Call(hwnd, 0, uintptr(alpha), lwaAlpha)
+	_, _, _ = procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpFrameChanged)
+}
+
 func FocusTopmost(hwnd uintptr) {
 	_, _, _ = procShowWindow.Call(hwnd, swShow)
 	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpShowWindow)
@@ -368,21 +385,22 @@ type appBarData struct {
 }
 
 var (
-	user32                   = windows.NewLazySystemDLL("user32.dll")
-	shell32                  = windows.NewLazySystemDLL("shell32.dll")
-	procSystemParametersInfo = user32.NewProc("SystemParametersInfoW")
-	procGetCursorPos         = user32.NewProc("GetCursorPos")
-	procGetWindowLong        = user32.NewProc("GetWindowLongW")
-	procSetWindowLong        = user32.NewProc("SetWindowLongW")
-	procSetWindowPos         = user32.NewProc("SetWindowPos")
-	procBringWindowToTop     = user32.NewProc("BringWindowToTop")
-	procSetForegroundWindow  = user32.NewProc("SetForegroundWindow")
-	procPostMessage          = user32.NewProc("PostMessageW")
-	procShowWindow           = user32.NewProc("ShowWindow")
-	procMonitorFromPoint     = user32.NewProc("MonitorFromPoint")
-	procSHAppBarMessage      = shell32.NewProc("SHAppBarMessage")
-	shcore                   = windows.NewLazySystemDLL("shcore.dll")
-	procGetDpiForMonitor     = shcore.NewProc("GetDpiForMonitor")
+	user32                         = windows.NewLazySystemDLL("user32.dll")
+	shell32                        = windows.NewLazySystemDLL("shell32.dll")
+	procSystemParametersInfo       = user32.NewProc("SystemParametersInfoW")
+	procGetCursorPos               = user32.NewProc("GetCursorPos")
+	procGetWindowLong              = user32.NewProc("GetWindowLongW")
+	procSetWindowLong              = user32.NewProc("SetWindowLongW")
+	procSetWindowPos               = user32.NewProc("SetWindowPos")
+	procBringWindowToTop           = user32.NewProc("BringWindowToTop")
+	procSetForegroundWindow        = user32.NewProc("SetForegroundWindow")
+	procPostMessage                = user32.NewProc("PostMessageW")
+	procShowWindow                 = user32.NewProc("ShowWindow")
+	procMonitorFromPoint           = user32.NewProc("MonitorFromPoint")
+	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
+	procSHAppBarMessage            = shell32.NewProc("SHAppBarMessage")
+	shcore                         = windows.NewLazySystemDLL("shcore.dll")
+	procGetDpiForMonitor           = shcore.NewProc("GetDpiForMonitor")
 )
 
 const (
@@ -399,11 +417,13 @@ const (
 	wsClipChildren     = 0x02000000
 	wsExTopmost        = 0x00000008
 	wsExToolWindow     = 0x00000080
+	wsExLayered        = 0x00080000
 	wsExNoActivate     = 0x08000000
 	styleDockBase      = wsPopup | wsClipSiblings | wsClipChildren
 	exStyleDockVisible = wsExTopmost | wsExToolWindow
 	exStyleDockHidden  = wsExTopmost | wsExToolWindow | wsExNoActivate
 	wmNull             = 0x0000
+	lwaAlpha           = 0x00000002
 	swHide             = 0x0000
 	swShow             = 0x0005
 
