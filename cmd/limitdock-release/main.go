@@ -15,8 +15,6 @@ import (
 
 func main() {
 	version := flag.String("version", "dev", "release version suffix")
-	includeOpenUsage := flag.Bool("include-openusage-binary", false, "bundle cached OpenUsage Windows binary")
-	skipOpenUsage := flag.Bool("skip-openusage-download", false, "do not bundle cached OpenUsage binary")
 	flag.Parse()
 
 	root, err := findRepoRoot()
@@ -53,17 +51,6 @@ func main() {
 		must(copyFile(filepath.Join(root, "docs", name), filepath.Join(releaseDir, "docs", name)))
 	}
 	must(copyFile(filepath.Join(root, "cmd", "limitdock", "LimitDock.exe.manifest"), filepath.Join(releaseDir, "LimitDock.exe.manifest")))
-
-	if *includeOpenUsage && !*skipOpenUsage {
-		src := filepath.Join(root, "engine", "downloads", "openusage_windows_amd64")
-		if _, err := os.Stat(filepath.Join(src, "openusage.exe")); err == nil {
-			must(copyDir(src, filepath.Join(releaseDir, "engine", "downloads", "openusage_windows_amd64")))
-		} else {
-			fmt.Fprintln(os.Stderr, "warning: cached openusage.exe not found; first run will download the official Windows release")
-		}
-	} else {
-		fmt.Println("openusage binary not bundled; first run will download the official Windows release.")
-	}
 
 	must(zipDir(releaseDir, releaseZip))
 	fmt.Println("Release prepared:", releaseDir)

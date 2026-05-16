@@ -14,8 +14,6 @@ import (
 )
 
 func main() {
-	noDownload := flag.Bool("NoDownload", false, "do not download OpenUsage when the binary is missing")
-	noDownloadLower := flag.Bool("no-download", false, "do not download OpenUsage when the binary is missing")
 	refresh := flag.Int("RefreshSeconds", 30, "refresh interval in seconds")
 	restoreWorkArea := flag.String("restore-workarea", "", "internal: restore workarea as left,top,right,bottom")
 	restoreDelay := flag.Int("restore-delay-ms", 1200, "internal: delay before restoring workarea")
@@ -37,7 +35,7 @@ func main() {
 		return
 	}
 
-	mutex, created, err := native.AcquireSingleInstance("Local\\LimitDock.OpenUsageHud")
+	mutex, created, err := native.AcquireSingleInstance("Local\\LimitDock.NativeHud")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "LimitDock cannot create its single-instance guard: %v\n", err)
 		os.Exit(1)
@@ -50,7 +48,7 @@ func main() {
 
 	root := paths.ResolveRoot()
 	p := paths.New(root)
-	opts := ui.Options{NoDownload: *noDownload || *noDownloadLower, RefreshSeconds: *refresh}
+	opts := ui.Options{RefreshSeconds: *refresh}
 	if err := ui.Run(p, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "LimitDock failed: %v\n", err)
 		os.Exit(1)

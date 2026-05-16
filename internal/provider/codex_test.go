@@ -82,6 +82,40 @@ func TestCodexReaderPrefersLogRateLimitsOverOlderSession(t *testing.T) {
 	}
 }
 
+func TestCodexReaderPicksNewestSessionFileWhenNoTimestamps(t *testing.T) {
+	// Regression: session files with no timestamps must be disambiguated by
+	// file mod time, so the newest file wins.
+	root := t.TempDir()
+	old := filepath.Join(root, "sessions", "2026", "05", "10")
+	new := filepath.Join(root, "sessions", "2026", "05", "16")
+	for _, dir := range []string{old, new} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	oldLine := `{"payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":90,"window_minutes":300},"secondary":{"used_percent":10,"window_minutes":10080}}}}`
+	newLine := `{"payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":20,"window_minutes":300},"secondary":{"used_percent":5,"window_minutes":10080}}}}`
+	if err := os.WriteFile(filepath.Join(old, "session.jsonl"), []byte(oldLine+"\n"), 0o644); err != nil {
+		t.Fatalf("write old: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(new, "session.jsonl"), []byte(newLine+"\n"), 0o644); err != nil {
+		t.Fatalf("write new: %v", err)
+	}
+
+	model, err := CodexReader{Root: root}.Read(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	snap := model.Snapshots["codex-cli"]
+	if snap == nil {
+		t.Fatalf("expected codex-cli snapshot: %#v", model.Snapshots)
+	}
+	metric := snap.Metrics["rate_limit_primary"]
+	if metric.Used == nil || *metric.Used != 20 {
+		t.Fatalf("expected primary used=20 (newest file), got %#v", metric)
+	}
+}
+
 func TestCodexReaderReturnsEmptyWithoutRateLimits(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sessions")

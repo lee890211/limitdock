@@ -134,6 +134,12 @@ func latestCodexRateLimitEvent(ctx context.Context, root string) (*codexRateLimi
 			}
 			continue
 		}
+		// Use the file's modification time as a fallback when the event has no
+		// embedded timestamp. Without this, iterating newest-first session files
+		// with zero timestamps always replaces the result with data from older files.
+		if event != nil && event.At.IsZero() && !file.ModTime.IsZero() {
+			event.At = file.ModTime
+		}
 		latest = newerCodexRateLimitEvent(latest, event)
 	}
 	return latest, firstErr
