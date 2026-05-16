@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lxn/walk"
@@ -107,20 +108,21 @@ type App struct {
 	shutdownMu   sync.Mutex
 	shutdownDone bool
 
-	mu          sync.Mutex
-	cards       []quota.Card
-	status      string
-	visible     bool
-	appbar      bool
-	baseWork    *native.Rect
-	cardHits    []cardHit
-	gearHit     walk.Rectangle
-	pinHit      walk.Rectangle
-	statusHit   walk.Rectangle
-	lastCardHit map[string]time.Time
-	lastMouseAt time.Time
-	lastMousePt walk.Point
-	revealed    bool
+	mu             sync.Mutex
+	cards          []quota.Card
+	status         string
+	visible        bool
+	openUsageReady atomic.Bool
+	appbar         bool
+	baseWork       *native.Rect
+	cardHits       []cardHit
+	gearHit        walk.Rectangle
+	pinHit         walk.Rectangle
+	statusHit      walk.Rectangle
+	lastCardHit    map[string]time.Time
+	lastMouseAt    time.Time
+	lastMousePt    walk.Point
+	revealed       bool
 }
 
 type cardHit struct {
@@ -292,11 +294,22 @@ func (a *App) bootstrapOpenUsage(noDownload bool) {
 		a.setStatus(statusWaitingOU)
 		return
 	}
-	if a.manager.WaitReady(a.ctx, 12*time.Second) {
-		a.setStatus(statusOUReady)
-		a.refreshOnce()
-	} else if a.ctx.Err() == nil {
+	for timeout := 12 * time.Second; a.ctx.Err() == nil; timeout = 5 * time.Second {
+		if a.manager.WaitReady(a.ctx, timeout) {
+			a.openUsageReady.Store(true)
+			a.setStatus(statusOUReady)
+			a.refreshOnce()
+			return
+		}
+		if a.ctx.Err() != nil {
+			return
+		}
 		a.setStatus(statusWaitingOU)
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-time.After(10 * time.Second):
+		}
 	}
 }
 
@@ -332,14 +345,15 @@ func (a *App) refreshOnce() {
 }
 
 func (a *App) providerReaders() []provider.Reader {
-	readers := []provider.Reader{
-		openusage.Reader{
+	readers := []provider.Reader{}
+	if a.openUsageReady.Load() {
+		readers = append(readers, openusage.Reader{
 			Client: readmodel.Client{SocketPath: a.paths.SocketPath},
-		},
-		provider.CodexReader{
-			Log: a.log,
-		},
+		})
 	}
+	readers = append(readers, provider.CodexReader{
+		Log: a.log,
+	})
 	readers = append(readers, provider.AntigravityReader{Log: a.log})
 	return readers
 }

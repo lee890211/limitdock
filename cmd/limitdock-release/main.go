@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -156,6 +157,9 @@ func zipDir(src, dst string) error {
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		if isForbiddenReleaseEntry(rel) {
+			return fmt.Errorf("refusing to package personal or runtime file: %s", rel)
+		}
 		if entry.IsDir() {
 			_, err := zw.Create(rel + "/")
 			return err
@@ -182,6 +186,17 @@ func zipDir(src, dst string) error {
 		_, err = io.Copy(writer, in)
 		return err
 	})
+}
+
+func isForbiddenReleaseEntry(rel string) bool {
+	rel = strings.Trim(strings.ToLower(filepath.ToSlash(rel)), "/")
+	if rel == "" {
+		return false
+	}
+	if path.Base(rel) == "settings.json" {
+		return true
+	}
+	return strings.HasPrefix(rel, "engine/state/")
 }
 
 func must(err error) {
