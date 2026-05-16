@@ -17,9 +17,7 @@ LimitDock intentionally does not show spend, token totals, request counts, tool-
 
 Bundled provider icons are neutral LimitDock badges, not official brand logos. If you replace files under `assets/icons` with official brand assets, make sure the usage is allowed by that provider's brand guidelines and trademark terms.
 
-LimitDock is built on [openusage](https://github.com/janekbaraniewski/openusage). It is not a replacement for openusage: provider discovery, telemetry, and the read model belong there. LimitDock supervises the openusage daemon, reads its local read-model endpoint, normalizes quota-like rows, and renders them as a native Windows dock. Many thanks to the openusage maintainers for building the local usage/quota foundation this project depends on.
-
-Provider support follows OpenUsage's upstream provider list where possible. See [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). Providers listed there are handled through the `connector/openusage` reader. Providers not exposed by OpenUsage, or providers that need a local fallback when OpenUsage has no quota rows, live in `internal/provider` as custom readers that emit the same internal read model.
+LimitDock uses native provider readers for each supported tool. All quota data is read directly from local credentials, session files, or provider APIs — no external daemon required.
 
 ## Provider Support
 
@@ -27,13 +25,11 @@ LimitDock renders only quota-like rows. A provider can be detected by OpenUsage 
 
 | Provider or agent | Source | LimitDock behavior |
 | --- | --- | --- |
-| Claude Code | OpenUsage | Rendered when OpenUsage exposes quota-like rows. |
-| Cursor | OpenUsage | Plan-cycle quota from `plan_percent_used`; reset comes from `billing_cycle_end` when present. |
-| GitHub Copilot | OpenUsage | Rendered when OpenUsage exposes chat/completion quota rows. |
-| Codex CLI | OpenUsage first, custom fallback second | OpenUsage rows win. If OpenUsage has no Codex quota rows, the local fallback scans recent Codex session rate-limit events. |
-| Gemini CLI | OpenUsage | Model-specific quota rows are preferred; aggregate duplicate rows are suppressed when precise model rows exist. |
-| OpenCode, Ollama, OpenAI, Anthropic, OpenRouter, Groq, Mistral AI, DeepSeek, Moonshot/Kimi, Perplexity, xAI/Grok, Z.AI, Google Gemini API, Alibaba Cloud | OpenUsage | Rendered only when OpenUsage exposes quota-like rows in the read model. |
-| Antigravity | LimitDock custom reader only | Quota-only and automatic. It can read the running local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. If Antigravity is closed or no quota rows are present, no card is shown. |
+| Claude Code | LimitDock native reader | Calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Returns real utilization percent, not a time-elapsed estimate. |
+| Codex CLI | LimitDock native reader | Scans recent `.codex/sessions` JSONL events for `rate_limits` rows. |
+| Antigravity | LimitDock native reader | Reads local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. No card is shown if no quota rows are present. |
+| Gemini CLI | OpenUsage (native reader planned) | Model-specific quota rows are preferred; aggregate duplicate rows are suppressed when precise model rows exist. |
+| Cursor | OpenUsage (native reader planned) | Plan-cycle quota from `plan_percent_used`; reset comes from `billing_cycle_end` when present. |
 
 ## User Guide
 
@@ -107,7 +103,7 @@ Antigravity support is quota-only and automatic. If OpenUsage does not expose An
 2. Extract the whole folder. Do not run `LimitDock.exe` by itself; it expects the icons, settings reference, and runtime folders beside it.
 3. Run `LimitDock.exe`.
 
-On first run, LimitDock downloads the official openusage Windows binary when it is not bundled. A local `settings.json` is created next to the app. The release includes `settings.example.json` as the portable configuration reference; personal `settings.json` files are never committed or shipped.
+A local `settings.json` is created next to the app on first run. The release includes `settings.example.json` as the portable configuration reference; personal `settings.json` files are never committed or shipped.
 
 ## Build From Source
 

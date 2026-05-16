@@ -1,15 +1,14 @@
 # LimitDock Notes
 
-LimitDock is a native Windows companion for OpenUsage.sh quota telemetry. It exists to make OpenUsage.sh quota data visible while coding without opening a terminal dashboard.
+LimitDock is a native Windows dock that shows remaining AI tool quota at a glance. It reads quota data directly from each provider's local credentials or session files, with no external daemon required.
 
 Current architecture:
 
-- Use the official OpenUsage.sh Windows binary when available, downloading it on first run when it is not bundled.
-- Start and stop the OpenUsage telemetry daemon with the LimitDock session.
-- Read provider data through a single Go provider aggregator.
-- Use OpenUsage's local read-model socket for Cursor, Gemini CLI, and other upstream-supported providers.
-- Use a native Claude Code reader (`internal/provider/claudecode.go`) that calls `api.anthropic.com/api/oauth/usage` directly with the OAuth token from `~/.claude/.credentials.json` (or `CLAUDE_CODE_OAUTH_TOKEN` env var). This gives real quota utilization instead of the time-elapsed estimate OpenUsage provides on Windows.
-- Use custom quota-only readers for providers outside OpenUsage, starting with Antigravity.
+- Read provider data through a single Go provider aggregator (`internal/provider`).
+- Claude Code: native reader calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` (or `CLAUDE_CODE_OAUTH_TOKEN`). Returns real utilization percent, not a time-elapsed estimate.
+- Codex CLI: native reader scans recent `.codex/sessions` JSONL events for `rate_limits` rows.
+- Antigravity: native reader checks local language-server status and `%APPDATA%\Antigravity` cache for quota rows.
+- Gemini CLI, Cursor: currently read through the OpenUsage connector; native readers are planned (see GitHub issues).
 - Normalize quota-like rows into compact provider cards.
 - Render top, bottom, left, or right docks in overlay or reserved mode.
 

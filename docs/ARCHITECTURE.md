@@ -1,15 +1,15 @@
 # Architecture
 
-LimitDock is a Go native Windows shell around a normalized quota read model. OpenUsage.sh is the primary connector: LimitDock supervises the daemon, reads snapshots, normalizes quota rows, and renders the bar. Local custom readers can fill provider gaps when OpenUsage does not expose quota rows.
+LimitDock is a Go native Windows shell around a normalized quota read model. Provider data is read directly by LimitDock's native readers; OpenUsage is used as a temporary connector for Gemini CLI and Cursor until native readers are added for those two providers.
 
 ## Runtime Boundary
 
 `cmd/limitdock` and the `internal/*` Go packages own:
 
 - single-instance mutex and PID file
-- OpenUsage daemon start/stop
+- OpenUsage daemon start/stop (used for Gemini CLI and Cursor until native readers replace them)
 - OpenUsage read-model socket calls
-- local custom provider fallback reads
+- native provider reads (Claude Code, Codex, Antigravity)
 - native Windows status bar and tray icon
 - settings persistence
 
@@ -23,10 +23,12 @@ OpenUsage.sh owns provider discovery and telemetry for upstream-supported provid
 
 `internal/provider` is the single read boundary for quota sources. The UI asks the provider `Aggregator` for one `readmodel.ReadModel`; it does not know whether a snapshot came from OpenUsage or a LimitDock custom reader.
 
-- `internal/connector/openusage` owns the external OpenUsage connector: daemon management and socket reads.
-- `openusage.Reader` reads `/v1/read-model` from the OpenUsage daemon socket and is registered first.
-- Custom readers emit the same `readmodel.Snapshot` and `readmodel.Metric` shape, so `internal/quota` can normalize all providers through one path.
-- Duplicate snapshot keys keep the first reader's data. Fallback readers also declare a provider id; when OpenUsage already has quota rows for that provider, the fallback snapshot is skipped even if its account key differs.
+- `ClaudeCodeReader` is registered first and reads quota directly from `api.anthropic.com/api/oauth/usage`.
+- `CodexReader` scans `.codex/sessions` JSONL events and is registered second.
+- `AntigravityReader` checks local language-server status and `%APPDATA%\Antigravity` cache.
+- `openusage.Reader` is registered last and reads `/v1/read-model` from the OpenUsage daemon socket. It currently handles Gemini CLI and Cursor until native readers are added for those providers.
+- All readers emit the same `readmodel.Snapshot` and `readmodel.Metric` shape; `internal/quota` normalizes all providers through one path.
+- Duplicate snapshot keys keep the first reader's data. Because `ClaudeCodeReader` is first, OpenUsage's time-elapsed Claude estimate is always suppressed.
 
 Quota normalization is intentionally narrow:
 
@@ -42,7 +44,7 @@ Throughput, spend, request, token, and cost metrics are filtered before renderin
 
 Codex:
 
-- OpenUsage is read first. If OpenUsage has no Codex quota rows, the custom Codex fallback reader scans recent `.codex/sessions` JSONL events for `rate_limits`.
+- The native Codex reader scans recent `.codex/sessions` JSONL events for `rate_limits` rows.
 - Keep `rate_limit_codex_bengalfox_*` rows.
 - Prefer `attributes.rate_limit_codex_bengalfox_name` or matching raw name fields for labels such as `GPT-5.3-Codex-Spark`.
 
@@ -58,8 +60,8 @@ Cursor:
 
 Antigravity:
 
-- Antigravity is handled as a quota-only custom reader when OpenUsage does not expose it.
-- The custom reader looks for local Antigravity language-server status and common `%APPDATA%\Antigravity` cache locations, and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
+- Handled entirely by the LimitDock native reader; does not go through OpenUsage.
+- The reader looks for local Antigravity language-server status and common `%APPDATA%\Antigravity` cache locations, and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
 - If no quota rows are available, Antigravity is not rendered as a status-only card.
 
 ## Settings
