@@ -101,8 +101,11 @@ type App struct {
 	fontIcon  *walk.Font
 	images    map[string]*walk.Bitmap
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx          context.Context
+	cancel       context.CancelFunc
+	shutdownOnce sync.Once
+	shutdownMu   sync.Mutex
+	shutdownDone bool
 
 	mu          sync.Mutex
 	cards       []quota.Card
@@ -196,10 +199,9 @@ func (a *App) createWindow() error {
 		_ = a.mw.SetIcon(icon)
 	}
 	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
-		a.cancel()
-		a.removeAppBarRegistration()
-		if a.notify != nil {
-			_ = a.notify.SetVisible(false)
+		if !a.isShutdownDone() {
+			*canceled = true
+			a.beginShutdown()
 		}
 	})
 
@@ -244,7 +246,9 @@ func (a *App) setupTray() error {
 	a.trayHide = a.addTrayAction(trayHideStatus, func() { a.setStatusVisible(false) })
 	a.trayShow = a.addTrayAction(trayShowStatus, func() { a.setStatusVisible(true) })
 	a.addTrayAction(traySettings, func() { a.showSettingsDialog() })
-	a.addTrayAction(trayExit, func() { _ = a.mw.Close() })
+	a.addTrayAction(trayExit, func() {
+		a.beginShutdown()
+	})
 	a.refreshTrayVisibilityActions()
 	return ni.SetVisible(true)
 }
@@ -270,11 +274,20 @@ func (a *App) refreshTrayVisibilityActions() {
 func (a *App) bootstrapOpenUsage(noDownload bool) {
 	a.setStatus(statusStartingOU)
 	if err := a.manager.EnsureBinary(a.ctx, noDownload); err != nil {
+		if a.ctx.Err() != nil {
+			return
+		}
 		a.log.Printf("OpenUsage binary unavailable: %v", err)
 		a.setStatus(statusOUUnavailable)
 		return
 	}
+	if a.ctx.Err() != nil {
+		return
+	}
 	if err := a.manager.Start(); err != nil {
+		if a.ctx.Err() != nil {
+			return
+		}
 		a.log.Printf("Failed to launch daemon process: %v", err)
 		a.setStatus(statusWaitingOU)
 		return
@@ -282,7 +295,7 @@ func (a *App) bootstrapOpenUsage(noDownload bool) {
 	if a.manager.WaitReady(a.ctx, 12*time.Second) {
 		a.setStatus(statusOUReady)
 		a.refreshOnce()
-	} else {
+	} else if a.ctx.Err() == nil {
 		a.setStatus(statusWaitingOU)
 	}
 }
@@ -1307,6 +1320,9 @@ func (a *App) diagnosticsText() string {
 
 func (a *App) cleanup() {
 	a.cancel()
+	if !a.isShutdownDone() && a.manager != nil {
+		a.manager.Stop()
+	}
 	if base, ok := a.unregisterAppBar(); ok {
 		if err := native.ScheduleWorkAreaRestore(base); err != nil {
 			a.log.Printf("Reserved delayed workarea restore failed to start: %v", err)
@@ -1316,9 +1332,6 @@ func (a *App) cleanup() {
 		_ = a.notify.SetVisible(false)
 		_ = a.notify.Dispose()
 	}
-	if a.manager != nil {
-		a.manager.Stop()
-	}
 	for _, img := range a.images {
 		img.Dispose()
 	}
@@ -1327,6 +1340,37 @@ func (a *App) cleanup() {
 			f.Dispose()
 		}
 	}
+}
+
+func (a *App) beginShutdown() {
+	a.shutdownOnce.Do(func() {
+		a.cancel()
+		a.log.Printf("Exit requested; keeping tray icon visible until shutdown completes")
+		if a.notify != nil {
+			_ = a.notify.SetToolTip(appName + " exiting")
+		}
+		go a.finishShutdown()
+	})
+}
+
+func (a *App) finishShutdown() {
+	if a.manager != nil {
+		a.manager.Stop()
+	}
+	a.shutdownMu.Lock()
+	a.shutdownDone = true
+	a.shutdownMu.Unlock()
+	a.log.Printf("Shutdown cleanup completed; closing UI")
+	if a.mw != nil && !a.mw.IsDisposed() {
+		native.PostClose(uintptr(a.mw.Handle()))
+		native.WakeWindow(uintptr(a.mw.Handle()))
+	}
+}
+
+func (a *App) isShutdownDone() bool {
+	a.shutdownMu.Lock()
+	defer a.shutdownMu.Unlock()
+	return a.shutdownDone
 }
 
 func (a *App) setStatus(text string) {
