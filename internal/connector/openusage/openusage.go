@@ -35,7 +35,8 @@ type Manager struct {
 	ErrLog     string
 	Log        Logger
 
-	cmd *exec.Cmd
+	cmd     *exec.Cmd
+	cmdDone chan error
 }
 
 func (m *Manager) EnsureBinary(ctx context.Context, noDownload bool) error {
@@ -108,6 +109,8 @@ func (m *Manager) Start() error {
 		return err
 	}
 	m.cmd = cmd
+	m.cmdDone = make(chan error, 1)
+	done := m.cmdDone
 	if m.Log != nil {
 		m.Log.Printf("Started OpenUsage.sh daemon pid=%d socket=%s", cmd.Process.Pid, m.SocketPath)
 	}
@@ -115,7 +118,8 @@ func (m *Manager) Start() error {
 		_ = os.WriteFile(m.DaemonPID, []byte(fmt.Sprintf("%d\n", cmd.Process.Pid)), 0o644)
 	}
 	go func() {
-		_ = cmd.Wait()
+		done <- cmd.Wait()
+		close(done)
 		_ = out.Close()
 		_ = errf.Close()
 	}()
@@ -149,12 +153,15 @@ func (m *Manager) Stop() {
 			m.Log.Printf("Stopping OpenUsage.sh daemon pid=%d", m.cmd.Process.Pid)
 		}
 		_ = m.cmd.Process.Kill()
+		waitCmdDone(m.cmdDone, 2*time.Second)
 	}
 	m.stopPIDFileProcess("Stopping OpenUsage.sh daemon from pid file")
 	_ = os.Remove(m.SocketPath)
 	if m.DaemonPID != "" {
 		_ = os.Remove(m.DaemonPID)
 	}
+	m.cmd = nil
+	m.cmdDone = nil
 }
 
 func (m *Manager) stopPIDFileProcess(message string) {
@@ -183,7 +190,41 @@ func (m *Manager) stopPIDFileProcess(message string) {
 	}
 	if p, err := os.FindProcess(pid); err == nil {
 		_ = p.Kill()
+		waitForPIDExit(pid, 2*time.Second)
 	}
+}
+
+func waitCmdDone(done <-chan error, timeout time.Duration) bool {
+	if done == nil {
+		return false
+	}
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func waitForPIDExit(pid int, timeout time.Duration) bool {
+	if pid <= 0 {
+		return true
+	}
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		return true
+	}
+	defer windows.CloseHandle(handle)
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	result, err := windows.WaitForSingleObject(handle, uint32(timeout/time.Millisecond))
+	return err == nil && result == windows.WAIT_OBJECT_0
 }
 
 func (m *Manager) processMatchesExe(pid int) bool {

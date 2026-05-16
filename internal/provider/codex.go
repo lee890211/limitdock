@@ -3,6 +3,7 @@ package provider
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -15,9 +16,15 @@ import (
 	"time"
 
 	"limitdock/internal/readmodel"
+
+	_ "modernc.org/sqlite"
 )
 
-const maxCodexSessionFiles = 160
+const (
+	maxCodexSessionFiles = 160
+	codexLogLookback     = 7 * 24 * time.Hour
+	codexLogQueryLimit   = 64
+)
 
 var codexLogOnce sync.Map
 
@@ -29,6 +36,11 @@ type CodexReader struct {
 type codexSessionFile struct {
 	Path    string
 	ModTime time.Time
+}
+
+type codexRateLimitEvent struct {
+	Limits map[string]any
+	At     time.Time
 }
 
 func (r CodexReader) Name() string {
@@ -44,20 +56,14 @@ func (r CodexReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 	if root == "" {
 		root = defaultCodexRoot()
 	}
-	files := codexSessionFiles(root)
-	for _, file := range files {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		limits, err := latestCodexRateLimits(file.Path)
-		if err != nil || limits == nil {
-			continue
-		}
-		snap := codexSnapshot(limits)
+	event, err := latestCodexRateLimitEvent(ctx, root)
+	if err != nil {
+		logCodexOnce(r.Log, "read", "Codex fallback reader had trouble reading local rate-limit rows: %v", err)
+	}
+	if event != nil {
+		snap := codexSnapshot(event.Limits)
 		if snap == nil || len(snap.Metrics) == 0 {
-			continue
+			return emptyReadModel(), nil
 		}
 		return &readmodel.ReadModel{
 			Snapshots: map[string]*readmodel.Snapshot{
@@ -107,7 +113,90 @@ func codexSessionFiles(root string) []codexSessionFile {
 	return out
 }
 
-func latestCodexRateLimits(path string) (map[string]any, error) {
+func latestCodexRateLimitEvent(ctx context.Context, root string) (*codexRateLimitEvent, error) {
+	var latest *codexRateLimitEvent
+	var firstErr error
+	if event, err := latestCodexLogRateLimitEvent(ctx, root, time.Now().UTC()); err != nil {
+		firstErr = err
+	} else {
+		latest = newerCodexRateLimitEvent(latest, event)
+	}
+	for _, file := range codexSessionFiles(root) {
+		select {
+		case <-ctx.Done():
+			return latest, ctx.Err()
+		default:
+		}
+		event, err := latestCodexSessionRateLimitEvent(file.Path)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		latest = newerCodexRateLimitEvent(latest, event)
+	}
+	return latest, firstErr
+}
+
+func latestCodexLogRateLimitEvent(ctx context.Context, root string, now time.Time) (*codexRateLimitEvent, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil, nil
+	}
+	dbPath := filepath.Join(root, "logs_2.sqlite")
+	if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
+		return nil, nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+	defer cancel()
+	db, err := sql.Open("sqlite", sqliteReadOnlyDSN(dbPath))
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	rows, err := db.QueryContext(queryCtx, `
+SELECT ts, ts_nanos, feedback_log_body
+FROM logs
+WHERE ts >= ?
+  AND target = 'codex_api::endpoint::responses_websocket'
+  AND feedback_log_body LIKE '%websocket event: {"type":"codex.rate_limits"%'
+ORDER BY ts DESC, ts_nanos DESC
+LIMIT ?`, now.Add(-codexLogLookback).Unix(), codexLogQueryLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var latest *codexRateLimitEvent
+	for rows.Next() {
+		var sec, nanos int64
+		var body sql.NullString
+		if err := rows.Scan(&sec, &nanos, &body); err != nil {
+			return latest, err
+		}
+		if !body.Valid {
+			continue
+		}
+		at := time.Unix(sec, nanos).UTC()
+		for _, event := range codexRateLimitEventsFromText(body.String, at) {
+			latest = newerCodexRateLimitEvent(latest, event)
+		}
+		if latest != nil {
+			return latest, rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return latest, err
+	}
+	return latest, nil
+}
+
+func sqliteReadOnlyDSN(path string) string {
+	return "file:" + filepath.ToSlash(path) + "?mode=ro&cache=private"
+}
+
+func latestCodexSessionRateLimitEvent(path string) (*codexRateLimitEvent, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -115,7 +204,7 @@ func latestCodexRateLimits(path string) (map[string]any, error) {
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	var latest map[string]any
+	var latest *codexRateLimitEvent
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.Contains(line, `"rate_limits"`) && !strings.Contains(line, `"rateLimits"`) {
@@ -125,11 +214,12 @@ func latestCodexRateLimits(path string) (map[string]any, error) {
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
 			continue
 		}
+		at := codexEventTime(raw)
 		found := []map[string]any{}
 		collectCodexRateLimits(raw, &found)
 		for _, item := range found {
 			if item != nil {
-				latest = item
+				latest = &codexRateLimitEvent{Limits: normalizeCodexRateLimits(item, nil), At: at}
 			}
 		}
 	}
@@ -137,6 +227,65 @@ func latestCodexRateLimits(path string) (map[string]any, error) {
 		return nil, err
 	}
 	return latest, nil
+}
+
+func codexRateLimitEventsFromText(text string, at time.Time) []*codexRateLimitEvent {
+	const marker = `{"type":"codex.rate_limits"`
+	events := []*codexRateLimitEvent{}
+	for {
+		idx := strings.Index(text, marker)
+		if idx < 0 {
+			return events
+		}
+		obj, ok := extractJSONObject(text[idx:])
+		if !ok {
+			text = text[idx+len(marker):]
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(obj), &raw); err == nil {
+			if limits := objectAny(raw, "rate_limits", "rateLimits"); limits != nil {
+				events = append(events, &codexRateLimitEvent{
+					Limits: normalizeCodexRateLimits(limits, raw),
+					At:     at,
+				})
+			}
+		}
+		text = text[idx+len(obj):]
+	}
+}
+
+func extractJSONObject(text string) (string, bool) {
+	depth := 0
+	inString := false
+	escape := false
+	for i, r := range text {
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			switch r {
+			case '\\':
+				escape = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[:i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 func collectCodexRateLimits(v any, out *[]map[string]any) {
@@ -153,6 +302,59 @@ func collectCodexRateLimits(v any, out *[]map[string]any) {
 			collectCodexRateLimits(child, out)
 		}
 	}
+}
+
+func normalizeCodexRateLimits(limits map[string]any, event map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range limits {
+		out[key] = value
+	}
+	if firstString(out, "limit_id", "limitId", "limit_name", "limitName") == "" {
+		out["limit_id"] = "codex"
+	}
+	if event != nil {
+		if firstString(out, "plan_type", "planType") == "" {
+			if plan := firstString(event, "plan_type", "planType"); plan != "" {
+				out["plan_type"] = plan
+			}
+		}
+	}
+	return out
+}
+
+func codexEventTime(raw any) time.Time {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return time.Time{}
+	}
+	if ts := firstString(m, "timestamp", "time"); ts != "" {
+		if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+			return t.UTC()
+		}
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+func newerCodexRateLimitEvent(a, b *codexRateLimitEvent) *codexRateLimitEvent {
+	if b == nil {
+		return a
+	}
+	if a == nil {
+		return b
+	}
+	if a.At.IsZero() {
+		return b
+	}
+	if b.At.IsZero() {
+		return a
+	}
+	if b.At.After(a.At) {
+		return b
+	}
+	return a
 }
 
 func codexSnapshot(limits map[string]any) *readmodel.Snapshot {
