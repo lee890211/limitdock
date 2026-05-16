@@ -345,7 +345,9 @@ func (a *App) refreshOnce() {
 }
 
 func (a *App) providerReaders() []provider.Reader {
-	readers := []provider.Reader{}
+	readers := []provider.Reader{
+		provider.ClaudeCodeReader{Log: a.log},
+	}
 	if a.openUsageReady.Load() {
 		readers = append(readers, openusage.Reader{
 			Client: readmodel.Client{SocketPath: a.paths.SocketPath},

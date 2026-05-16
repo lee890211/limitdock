@@ -7,7 +7,8 @@ Current architecture:
 - Use the official OpenUsage.sh Windows binary when available, downloading it on first run when it is not bundled.
 - Start and stop the OpenUsage telemetry daemon with the LimitDock session.
 - Read provider data through a single Go provider aggregator.
-- Use OpenUsage's local read-model socket for upstream-supported providers.
+- Use OpenUsage's local read-model socket for Cursor, Gemini CLI, and other upstream-supported providers.
+- Use a native Claude Code reader (`internal/provider/claudecode.go`) that calls `api.anthropic.com/api/oauth/usage` directly with the OAuth token from `~/.claude/.credentials.json` (or `CLAUDE_CODE_OAUTH_TOKEN` env var). This gives real quota utilization instead of the time-elapsed estimate OpenUsage provides on Windows.
 - Use custom quota-only readers for providers outside OpenUsage, starting with Antigravity.
 - Normalize quota-like rows into compact provider cards.
 - Render top, bottom, left, or right docks in overlay or reserved mode.
