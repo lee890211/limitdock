@@ -176,6 +176,10 @@ func WakeWindow(hwnd uintptr) {
 	_, _, _ = procPostMessage.Call(hwnd, wmNull, 0, 0)
 }
 
+func PostClose(hwnd uintptr) {
+	_, _, _ = procPostMessage.Call(hwnd, wmClose, 0, 0)
+}
+
 func RegisterAppBar(hwnd uintptr) bool {
 	data := appBarData{CbSize: uint32(unsafe.Sizeof(appBarData{})), HWnd: hwnd, CallbackMessage: appbarCallback}
 	r1, _, _ := procSHAppBarMessage.Call(abmNew, uintptr(unsafe.Pointer(&data)))
@@ -423,6 +427,7 @@ const (
 	exStyleDockVisible = wsExTopmost | wsExToolWindow
 	exStyleDockHidden  = wsExTopmost | wsExToolWindow | wsExNoActivate
 	wmNull             = 0x0000
+	wmClose            = 0x0010
 	lwaAlpha           = 0x00000002
 	swHide             = 0x0000
 	swShow             = 0x0005

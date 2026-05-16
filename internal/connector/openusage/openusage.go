@@ -153,7 +153,13 @@ func (m *Manager) Stop() {
 			m.Log.Printf("Stopping OpenUsage.sh daemon pid=%d", m.cmd.Process.Pid)
 		}
 		_ = m.cmd.Process.Kill()
-		waitCmdDone(m.cmdDone, 2*time.Second)
+		if waitCmdDone(m.cmdDone, 2*time.Second) {
+			if m.Log != nil {
+				m.Log.Printf("OpenUsage.sh daemon stopped pid=%d", m.cmd.Process.Pid)
+			}
+		} else if m.Log != nil {
+			m.Log.Printf("OpenUsage.sh daemon stop timed out pid=%d", m.cmd.Process.Pid)
+		}
 	}
 	m.stopPIDFileProcess("Stopping OpenUsage.sh daemon from pid file")
 	_ = os.Remove(m.SocketPath)
