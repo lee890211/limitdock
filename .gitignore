@@ -1,11 +1,11 @@
 # Runtime state and logs
 state/
-engine/state/
 
-# Build cache (moved from engine/ to repo root)
+# Legacy OpenUsage bundle (no longer used)
+engine/
+
+# Build cache
 .gocache/
-engine/.gocache/
-engine/.gomodcache/
 
 # Release artifacts
 dist/

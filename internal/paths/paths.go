@@ -7,7 +7,6 @@ import (
 
 type Paths struct {
 	Root     string
-	Engine   string
 	State    string
 	Spool    string
 	Logs     string
@@ -40,7 +39,6 @@ func New(root string) Paths {
 	logs := filepath.Join(state, "logs")
 	return Paths{
 		Root:     root,
-		Engine:   filepath.Join(root, "engine"), // kept for migration; no longer created
 		State:    state,
 		Spool:    filepath.Join(state, "limitdock-spool"),
 		Logs:     logs,

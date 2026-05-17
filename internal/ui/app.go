@@ -1225,7 +1225,7 @@ func (a *App) diagnosticsText() string {
 		"LimitDock diagnostics",
 		"Root: " + a.paths.Root,
 		"settings.json: " + a.paths.Settings,
-		"Engine: " + a.paths.Engine,
+		"State: " + a.paths.State,
 		"Logs: " + a.paths.Logs,
 	}, "\r\n")
 }
