@@ -17,19 +17,19 @@ LimitDock intentionally does not show spend, token totals, request counts, tool-
 
 Bundled provider icons are neutral LimitDock badges, not official brand logos. If you replace files under `assets/icons` with official brand assets, make sure the usage is allowed by that provider's brand guidelines and trademark terms.
 
-LimitDock uses native provider readers for each supported tool. All quota data is read directly from local credentials, session files, or provider APIs — no external daemon required.
+LimitDock reads quota directly from each tool's local credentials, session files, or APIs. No external daemon is required.
 
 ## Provider Support
 
-LimitDock renders only quota-like rows. A provider is absent from the dock if no quota, rate-limit, credit, or reset row is available from its native reader.
+LimitDock renders only quota-like rows. A provider is absent from the dock if no quota, rate-limit, credit, or reset row is available.
 
-| Provider or agent | Source | LimitDock behavior |
-| --- | --- | --- |
-| Claude Code | LimitDock native reader | Calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Returns real utilization percent, not a time-elapsed estimate. |
-| Codex CLI | LimitDock native reader | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` events so 5h and 7d windows stay accurate. |
-| Antigravity | LimitDock native reader | Reads local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. No card is shown if no quota rows are present. |
-| Gemini CLI | LimitDock native reader | Uses `~/.gemini/oauth_creds.json` (or related credential files), refreshes when needed, and calls Google Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
-| Cursor | LimitDock native reader | Reads the token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, refreshes when needed, and calls Cursor Connect `GetCurrentPeriodUsage` on `api2.cursor.sh`. Plan-cycle quota from `plan_percent_used`; reset from `billing_cycle_end` when present. |
+| Provider or agent | Notes |
+| --- | --- |
+| Claude Code | OAuth usage from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Real utilization percent, not a time-elapsed estimate. |
+| Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` events so 5h and 7d windows stay accurate. |
+| Antigravity | Local language-server status or common `%APPDATA%\Antigravity` cache data. No card when no quota rows are present. |
+| Gemini CLI | `~/.gemini/oauth_creds.json` (or related credential files) and Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
+| Cursor | Token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and Connect `GetCurrentPeriodUsage`. Plan-cycle quota from `plan_percent_used`; reset from `billing_cycle_end`. |
 
 ## User Guide
 

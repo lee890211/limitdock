@@ -46,7 +46,7 @@ Double-click a provider card to choose model/window rows.
 
 ![Visible row picker](images/manual-row-picker.png)
 
-Checked rows are visible. Unchecked rows are hidden. Hidden rows stay in `settings.json` and can be restored later; LimitDock never deletes source telemetry.
+Checked rows are visible. Unchecked rows are hidden. Hidden rows stay in `settings.json` and can be restored later; LimitDock never deletes underlying quota data.
 
 ## Left Or Right Dock
 
@@ -111,13 +111,13 @@ The settings window includes log and diagnostic controls. Use them to browse Lim
 
 LimitDock renders only quota-like rows. A provider is absent from the dock if no quota, rate-limit, credit, or reset row is available.
 
-| Provider or agent | Source | Notes |
-| --- | --- | --- |
-| Claude Code | LimitDock native reader | Calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Returns real utilization percent, not a time-elapsed estimate. |
-| Codex CLI | LimitDock native reader | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` rows. |
-| Gemini CLI | LimitDock native reader | Uses `~/.gemini/oauth_creds.json`, refreshes when needed, and calls Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
-| Cursor | LimitDock native reader | Uses `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, refreshes when needed, and calls Cursor Connect `GetCurrentPeriodUsage`. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
-| Antigravity | LimitDock native reader | Reads local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. No card is shown if no quota rows are present. |
+| Provider or agent | Notes |
+| --- | --- |
+| Claude Code | OAuth usage from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Real utilization percent, not a time-elapsed estimate. |
+| Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` rows. |
+| Gemini CLI | `~/.gemini/oauth_creds.json` and Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
+| Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and Connect `GetCurrentPeriodUsage`. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
+| Antigravity | Local language-server status or common `%APPDATA%\Antigravity` cache data. No card when no quota rows are present. |
 
 Codex:
 
