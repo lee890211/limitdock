@@ -1,9 +1,8 @@
 # LimitDock EXE Packaging
 
-LimitDock is packaged as a small Windows shell around one managed runtime piece:
+LimitDock is a self-contained Windows shell. No external daemon is required.
 
-- `LimitDock.exe`: Go native status bar, tray controller, settings, socket read-model adapter, and docking.
-- `engine/downloads/openusage_windows_amd64/openusage.exe`: official OpenUsage.sh daemon binary, downloaded on first run unless bundled intentionally.
+- `LimitDock.exe`: Go native status bar, tray controller, settings, native provider readers, and docking.
 
 ## Release Shape
 
@@ -16,11 +15,10 @@ LimitDock-<version>/
   settings.example.json
   assets/icons/*.png
   docs/images/*.png
-  engine/downloads/
   engine/state/
 ```
 
-Do not ship `settings.json`, databases, WAL files, PID files, logs, Go caches, OpenUsage.sh source, or personal runtime downloads. LimitDock fetches the official OpenUsage.sh Windows release when the runtime binary is missing.
+Do not ship `settings.json`, databases, WAL files, PID files, logs, or Go caches.
 
 Publish `dist/LimitDock-<version>.zip`. Do not publish `LimitDock.exe` alone: the EXE expects `assets/icons`, README screenshots, and runtime directories beside it. The full Markdown docs stay in the repository and are not copied into the default release folder.
 
@@ -39,7 +37,7 @@ Prepare a release folder and archive:
 go run .\cmd\limitdock-release -version vYYYYMMDD
 ```
 
-The release tool does not copy local `settings.json` into `dist/LimitDock-<version>.zip`. If you run the EXE from the release folder, a fresh local `settings.json` can appear there; rebuild before publishing the zip. The tool does not bundle OpenUsage.sh by default. Use `-include-openusage-binary` only for an explicit offline release after verifying the cached binary is the official upstream build.
+The release tool does not copy local `settings.json` into `dist/LimitDock-<version>.zip`. If you run the EXE from the release folder, a fresh local `settings.json` can appear there; rebuild before publishing the zip.
 
 ## EXE Smoke Test
 

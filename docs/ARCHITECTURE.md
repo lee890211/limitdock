@@ -1,34 +1,31 @@
 # Architecture
 
-LimitDock is a Go native Windows shell around a normalized quota read model. Provider data is read directly by LimitDock's native readers; OpenUsage is used as a temporary connector for Gemini CLI and Cursor until native readers are added for those two providers.
+LimitDock is a Go native Windows shell around a normalized quota read model. All provider data is read directly by LimitDock's native readers; no external daemon is required.
 
 ## Runtime Boundary
 
 `cmd/limitdock` and the `internal/*` Go packages own:
 
 - single-instance mutex and PID file
-- OpenUsage daemon start/stop (used for Gemini CLI and Cursor until native readers replace them)
-- OpenUsage read-model socket calls
-- native provider reads (Claude Code, Codex, Antigravity)
+- native provider reads (Claude Code, Codex, Gemini CLI, Cursor, Antigravity)
 - native Windows status bar and tray icon
 - settings persistence
 
-The runtime app does not invoke external shell scripts. Startup registration, docking, tray behavior, OpenUsage process management, and work-area restore are implemented from Go.
+The runtime app does not invoke external shell scripts or manage any external daemon. Startup registration, docking, tray behavior, and work-area restore are implemented entirely in Go.
 
-The settings dialog still exposes OpenUsage and diagnostics affordances from the legacy app: it can open `%APPDATA%\openusage\settings.json`, open the OpenUsage settings folder, browse LimitDock logs, open the app log, and copy diagnostic paths. It does not expose Antigravity path fields because Antigravity is now auto-detected by the custom reader.
-
-OpenUsage.sh owns provider discovery and telemetry for upstream-supported providers. LimitDock custom readers are intentionally narrow and quota-only; they are used for missing providers or fallbacks, not as a replacement telemetry system.
+The settings dialog exposes log and diagnostic affordances: it can browse LimitDock logs, open the app log, and copy diagnostic paths. It does not expose Antigravity path fields because Antigravity is auto-detected by the custom reader.
 
 ## Provider Readers
 
-`internal/provider` is the single read boundary for quota sources. The UI asks the provider `Aggregator` for one `readmodel.ReadModel`; it does not know whether a snapshot came from OpenUsage or a LimitDock custom reader.
+`internal/provider` is the single read boundary for quota sources. The UI asks the provider `Aggregator` for one `readmodel.ReadModel`; it does not know which reader produced each snapshot.
 
 - `ClaudeCodeReader` is registered first and reads quota directly from `api.anthropic.com/api/oauth/usage`.
 - `CodexReader` scans `.codex/sessions` JSONL events and is registered second.
-- `AntigravityReader` checks local language-server status and `%APPDATA%\Antigravity` cache.
-- `openusage.Reader` is registered last and reads `/v1/read-model` from the OpenUsage daemon socket. It currently handles Gemini CLI and Cursor until native readers are added for those providers.
+- `GeminiCLIReader` reads quota from `~/.gemini/usage.json` and is registered third.
+- `CursorReader` calls `cursor.com/api/usage` with the token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and is registered fourth.
+- `AntigravityReader` checks local language-server status and `%APPDATA%\Antigravity` cache and is registered last.
 - All readers emit the same `readmodel.Snapshot` and `readmodel.Metric` shape; `internal/quota` normalizes all providers through one path.
-- Duplicate snapshot keys keep the first reader's data. Because `ClaudeCodeReader` is first, OpenUsage's time-elapsed Claude estimate is always suppressed.
+- Duplicate snapshot keys keep the first reader's data.
 
 Quota normalization is intentionally narrow:
 
@@ -60,7 +57,7 @@ Cursor:
 
 Antigravity:
 
-- Handled entirely by the LimitDock native reader; does not go through OpenUsage.
+- Handled entirely by the LimitDock native reader.
 - The reader looks for local Antigravity language-server status and common `%APPDATA%\Antigravity` cache locations, and emits a snapshot only when percent/reset or prompt-credit quota rows are present.
 - If no quota rows are available, Antigravity is not rendered as a status-only card.
 
