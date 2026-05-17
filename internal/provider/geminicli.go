@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +84,7 @@ func discoverGeminiCredentialsPath() string {
 		return ""
 	}
 	candidates := []string{
+		filepath.Join(home, ".gemini", "oauth_creds.json"),
 		filepath.Join(home, ".gemini", "oauth_credentials.json"),
 		filepath.Join(home, ".gemini", "credentials.json"),
 	}
@@ -109,26 +111,77 @@ func readGeminiAccessToken(path string) (string, error) {
 	if err := json.Unmarshal(data, &creds); err != nil {
 		return "", fmt.Errorf("parsing credentials: %w", err)
 	}
-	// Check expiry (Node.js format: ms since epoch)
+	// Check expiry and refresh if needed
+	expired := false
+	var expiredAt time.Time
 	if creds.ExpiryDate > 0 {
 		expiresAt := time.UnixMilli(creds.ExpiryDate)
 		if time.Now().Add(30 * time.Second).After(expiresAt) {
-			return "", fmt.Errorf("access token expired at %s", expiresAt.Format(time.RFC3339))
+			expired = true
+			expiredAt = expiresAt
 		}
 	}
-	// Check expiry (Go gcloud format: RFC3339)
-	if creds.Expiry != "" && creds.AccessToken != "" {
+	if !expired && creds.Expiry != "" {
 		if exp, err := time.Parse(time.RFC3339, creds.Expiry); err == nil {
 			if time.Now().Add(30 * time.Second).After(exp) {
-				return "", fmt.Errorf("access token expired at %s", exp.Format(time.RFC3339))
+				expired = true
+				expiredAt = exp
 			}
 		}
+	}
+	if expired {
+		if refreshed, err := refreshGeminiToken(creds); err == nil {
+			return refreshed, nil
+		}
+		return "", fmt.Errorf("access token expired at %s", expiredAt.Format(time.RFC3339))
 	}
 	token := strings.TrimSpace(creds.AccessToken)
 	if token == "" {
 		return "", fmt.Errorf("no access_token in credentials file")
 	}
 	return token, nil
+}
+
+func refreshGeminiToken(creds geminiCredentials) (string, error) {
+	if creds.RefreshToken == "" || creds.ClientID == "" {
+		return "", fmt.Errorf("missing refresh_token or client_id")
+	}
+	vals := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {creds.RefreshToken},
+		"client_id":     {creds.ClientID},
+	}
+	if creds.ClientSecret != "" {
+		vals.Set("client_secret", creds.ClientSecret)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), geminiCLITimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://oauth2.googleapis.com/token",
+		strings.NewReader(vals.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decoding token response: %w", err)
+	}
+	if out.Error != "" {
+		return "", fmt.Errorf("token refresh: %s", out.Error)
+	}
+	if out.AccessToken == "" {
+		return "", fmt.Errorf("no access_token in refresh response")
+	}
+	return out.AccessToken, nil
 }
 
 func (r GeminiCLIReader) fetchQuota(ctx context.Context, token string) (map[string]any, error) {

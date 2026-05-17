@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +22,11 @@ import (
 const (
 	cursorTimeout  = 8 * time.Second
 	cursorUsageURL = "https://www.cursor.com/api/usage"
+	// Public client ID embedded in the Cursor desktop app (no secret required).
+	cursorOAuthClientID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
 )
+
+var errCursorUnauthorized = errors.New("cursor: 401 unauthorized")
 
 var cursorLogOnce sync.Map
 
@@ -34,13 +40,18 @@ func (r CursorReader) Name() string              { return "cursor" }
 func (r CursorReader) FallbackProviderID() string { return "cursor" }
 
 func (r CursorReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
-	token, accountID, err := r.resolveAuth()
+	token, refreshToken, accountID, err := r.resolveAuth()
 	if err != nil {
 		logCursorOnce(r.Log, "skip", "Cursor reader skipped: %v", err)
 		return emptyReadModel(), nil
 	}
 
 	data, err := r.fetchUsage(ctx, token)
+	if errors.Is(err, errCursorUnauthorized) && refreshToken != "" {
+		if newToken, rerr := refreshCursorToken(ctx, refreshToken); rerr == nil {
+			data, err = r.fetchUsage(ctx, newToken)
+		}
+	}
 	if err != nil {
 		logCursorOnce(r.Log, "api-err", "Cursor reader skipped: usage API unavailable: %v", err)
 		return emptyReadModel(), nil
@@ -59,13 +70,13 @@ func (r CursorReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 	}, nil
 }
 
-func (r CursorReader) resolveAuth() (token, accountID string, err error) {
+func (r CursorReader) resolveAuth() (token, refreshToken, accountID string, err error) {
 	dbPath := r.DBPath
 	if dbPath == "" {
 		dbPath = defaultCursorDBPath()
 	}
 	if dbPath == "" {
-		return "", "", fmt.Errorf("Cursor state.vscdb not found")
+		return "", "", "", fmt.Errorf("Cursor state.vscdb not found")
 	}
 	return readCursorAuth(dbPath)
 }
@@ -82,17 +93,17 @@ func defaultCursorDBPath() string {
 	return ""
 }
 
-func readCursorAuth(dbPath string) (token, accountID string, err error) {
+func readCursorAuth(dbPath string) (token, refreshToken, accountID string, err error) {
 	db, err := sql.Open("sqlite", sqliteReadOnlyDSN(dbPath))
 	if err != nil {
-		return "", "", fmt.Errorf("opening cursor db: %w", err)
+		return "", "", "", fmt.Errorf("opening cursor db: %w", err)
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	rows, err := db.Query(`SELECT key, value FROM ItemTable WHERE key IN ('cursorAuth/accessToken','cursorAuth/cachedEmail','cursorAuth/userId')`)
+	rows, err := db.Query(`SELECT key, value FROM ItemTable WHERE key IN ('cursorAuth/accessToken','cursorAuth/refreshToken','cursorAuth/cachedEmail','cursorAuth/userId')`)
 	if err != nil {
-		return "", "", fmt.Errorf("querying cursor db: %w", err)
+		return "", "", "", fmt.Errorf("querying cursor db: %w", err)
 	}
 	defer rows.Close()
 
@@ -105,13 +116,14 @@ func readCursorAuth(dbPath string) (token, accountID string, err error) {
 		values[k] = strings.TrimSpace(v)
 	}
 	if err := rows.Err(); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	token = values["cursorAuth/accessToken"]
 	if token == "" {
-		return "", "", fmt.Errorf("no access token in Cursor state.vscdb")
+		return "", "", "", fmt.Errorf("no access token in Cursor state.vscdb")
 	}
+	refreshToken = values["cursorAuth/refreshToken"]
 	accountID = values["cursorAuth/cachedEmail"]
 	if accountID == "" {
 		accountID = values["cursorAuth/userId"]
@@ -119,7 +131,43 @@ func readCursorAuth(dbPath string) (token, accountID string, err error) {
 	if accountID == "" {
 		accountID = "local"
 	}
-	return token, accountID, nil
+	return token, refreshToken, accountID, nil
+}
+
+func refreshCursorToken(ctx context.Context, refreshToken string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, cursorTimeout)
+	defer cancel()
+	vals := url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {cursorOAuthClientID},
+		"refresh_token": {refreshToken},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://api2.cursor.sh/oauth/token",
+		strings.NewReader(vals.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decoding token response: %w", err)
+	}
+	if out.Error != "" {
+		return "", fmt.Errorf("token refresh: %s", out.Error)
+	}
+	if out.AccessToken == "" {
+		return "", fmt.Errorf("no access_token in refresh response")
+	}
+	return out.AccessToken, nil
 }
 
 func (r CursorReader) fetchUsage(ctx context.Context, token string) (map[string]any, error) {
@@ -142,6 +190,9 @@ func (r CursorReader) fetchUsage(ctx context.Context, token string) (map[string]
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, errCursorUnauthorized
+	}
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %s", resp.Status)
 	}

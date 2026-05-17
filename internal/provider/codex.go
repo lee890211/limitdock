@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,6 +57,17 @@ func (r CodexReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 	if root == "" {
 		root = defaultCodexRoot()
 	}
+
+	// Try wham API first (always current data).
+	if snap := r.tryWham(ctx, root); snap != nil && len(snap.Metrics) > 0 {
+		return &readmodel.ReadModel{
+			Snapshots: map[string]*readmodel.Snapshot{
+				snapshotKey("codex", snap.AccountID): snap,
+			},
+		}, nil
+	}
+
+	// Fall back to local JSONL/sqlite scanning.
 	event, err := latestCodexRateLimitEvent(ctx, root)
 	if err != nil {
 		logCodexOnce(r.Log, "read", "Codex fallback reader had trouble reading local rate-limit rows: %v", err)
@@ -71,8 +83,95 @@ func (r CodexReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 			},
 		}, nil
 	}
-	logCodexOnce(r.Log, "missing", "Codex fallback reader skipped: no local Codex rate-limit rows found.")
+	logCodexOnce(r.Log, "missing", "Codex reader skipped: no local rate-limit rows found and wham API unavailable.")
 	return emptyReadModel(), nil
+}
+
+func (r CodexReader) tryWham(ctx context.Context, root string) *readmodel.Snapshot {
+	token, err := readCodexAuthToken(root)
+	if err != nil {
+		return nil
+	}
+	data, err := fetchCodexWhamUsage(ctx, token)
+	if err != nil {
+		return nil
+	}
+	return codexWhamToSnapshot(data)
+}
+
+func readCodexAuthToken(root string) (string, error) {
+	authPath := filepath.Join(root, "auth.json")
+	b, err := os.ReadFile(authPath)
+	if err != nil {
+		return "", err
+	}
+	var auth struct {
+		Tokens struct {
+			AccessToken string `json:"access_token"`
+		} `json:"tokens"`
+	}
+	if err := json.Unmarshal(b, &auth); err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(auth.Tokens.AccessToken)
+	if token == "" {
+		return "", fmt.Errorf("no access_token in codex auth.json")
+	}
+	return token, nil
+}
+
+func fetchCodexWhamUsage(ctx context.Context, token string) (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://chatgpt.com/backend-api/wham/usage", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("wham: HTTP %s", resp.Status)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("wham: decoding response: %w", err)
+	}
+	return out, nil
+}
+
+// codexWhamToSnapshot converts wham API response to a Snapshot.
+// Expected shape:
+//
+//	{
+//	  "rate_limit": {
+//	    "primary_window":   {"used_percent": 45.2, "window_minutes": 60,   "resets_at": "..."},
+//	    "secondary_window": {"used_percent": 12.8, "window_minutes": 1440, "resets_at": "..."}
+//	  }
+//	}
+func codexWhamToSnapshot(data map[string]any) *readmodel.Snapshot {
+	rl := objectAny(data, "rate_limit", "rateLimit")
+	if rl == nil {
+		return nil
+	}
+	limits := map[string]any{"limit_id": "codex"}
+	for _, name := range []string{"primary", "secondary"} {
+		win := objectAny(rl, name+"_window", name+"Window")
+		if win == nil {
+			continue
+		}
+		limits[name] = win
+	}
+	snap := codexSnapshot(limits)
+	if snap != nil {
+		snap.Raw = map[string]any{"source": "codex-wham"}
+	}
+	return snap
 }
 
 func defaultCodexRoot() string {
