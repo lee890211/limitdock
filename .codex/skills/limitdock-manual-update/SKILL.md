@@ -45,10 +45,13 @@ go run .\cmd\limitdock-release -version vYYYYMMDD-manual
 
 ```powershell
 .\.codex\skills\limitdock-manual-update\scripts\capture-limitdock-manual.ps1 `
-  -ReleaseDir .\dist\LimitDock-vYYYYMMDD-manual `
+  -ReleaseDir E:\LimitDock-v20260517 `
+  -SettingsPath E:\LimitDock-v20260517\settings.json `
   -OutputDir .\docs\images `
   -UiSettleSeconds 60
 ```
+
+Use a validated release folder for `-ReleaseDir`, not an ad-hoc `dist\...-manual` build unless you just built it from `main`. Pass `-SettingsPath` so `hiddenQuotaBands` and other user trims are preserved; the script only changes theme, dock edge/mode, opacity, and auto-hide per shot.
 
 3. Verify the generated images visually. Reject any image that includes private content or still shows an empty/waiting dock with no provider cards.
 

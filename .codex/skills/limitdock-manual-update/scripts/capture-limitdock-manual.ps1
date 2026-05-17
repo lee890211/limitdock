@@ -1,12 +1,14 @@
 param(
   [string]$ReleaseDir = (Join-Path (Get-Location) "dist\LimitDock-v20260510-go"),
   [string]$OutputDir = (Join-Path (Get-Location) "docs\images"),
+  [string]$SettingsPath = "",
   [int]$TimeoutSeconds = 90,
   [int]$UiSettleSeconds = 60,
   [switch]$KeepRunning
 )
 
 $ErrorActionPreference = "Stop"
+$script:SettingsTemplate = $null
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -37,21 +39,60 @@ function Stop-LimitDock {
   Start-Sleep -Milliseconds 800
 }
 
-function Write-Settings([string]$Theme, [string]$Edge, [string]$Mode, [bool]$AutoHide, [int]$Opacity) {
-  $settings = [ordered]@{
-    autoHide = $AutoHide
-    dockMode = $Mode
-    dockEdge = $Edge
-    theme = $Theme
-    overlayOpacity = $Opacity
-    startWithWindows = $false
-    hiddenQuotaBands = @{}
-    gaugeMaxBands = 4
-    gaugeWarnPercent = 72
-    gaugeCritPercent = 90
-    refreshSeconds = 5
+function Initialize-SettingsTemplate {
+  $path = $SettingsPath
+  if ([string]::IsNullOrWhiteSpace($path)) {
+    $path = Join-Path $ReleaseDir "settings.json"
   }
-  $settings | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $ReleaseDir "settings.json") -Encoding UTF8
+  if (!(Test-Path $path)) {
+    return
+  }
+  $script:SettingsTemplate = Get-Content $path -Raw | ConvertFrom-Json
+  $dest = Join-Path $ReleaseDir "settings.json"
+  $sameFile = $false
+  try {
+    $sameFile = ((Resolve-Path -LiteralPath $path).Path -eq (Resolve-Path -LiteralPath $dest).Path)
+  } catch {
+    $sameFile = ($path.TrimEnd('\') -ieq $dest.TrimEnd('\'))
+  }
+  if (!$sameFile) {
+    Copy-Item -LiteralPath $path -Destination $dest -Force
+  }
+  Write-Host "Using settings from $path (hiddenQuotaBands preserved for captures)."
+}
+
+function Write-Settings([string]$Theme, [string]$Edge, [string]$Mode, [bool]$AutoHide, [int]$Opacity) {
+  if ($script:SettingsTemplate) {
+    $settings = ($script:SettingsTemplate | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
+  } else {
+    $settings = [pscustomobject][ordered]@{
+      autoHide = $AutoHide
+      dockMode = $Mode
+      dockEdge = $Edge
+      theme = $Theme
+      overlayOpacity = $Opacity
+      startWithWindows = $false
+      hiddenQuotaBands = @{}
+      gaugeMaxBands = 4
+      gaugeWarnPercent = 72
+      gaugeCritPercent = 90
+      refreshSeconds = 5
+    }
+  }
+  $settings.theme = $Theme
+  $settings.dockEdge = $Edge
+  $settings.dockMode = $Mode
+  $settings.autoHide = [bool]$AutoHide
+  $settings.overlayOpacity = $Opacity
+  $settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ReleaseDir "settings.json") -Encoding UTF8
+}
+
+function Restore-SettingsTemplate {
+  if ($null -eq $script:SettingsTemplate) {
+    return
+  }
+  $script:SettingsTemplate | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $ReleaseDir "settings.json") -Encoding UTF8
+  Write-Host "Restored original settings.json in $ReleaseDir"
 }
 
 function Start-LimitDock {
@@ -201,6 +242,7 @@ function Capture-State([string]$Name, [string]$Theme, [string]$Edge, [string]$Mo
 }
 
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+Initialize-SettingsTemplate
 
 With-NeutralBackdrop {
   Capture-State "manual-ribbon-light.png" "light" "bottom" "reserved" $false 100
@@ -227,4 +269,5 @@ if (!$KeepRunning) {
   Stop-LimitDock
 }
 
+Restore-SettingsTemplate
 Write-Host "Manual capture assets written to $OutputDir"
