@@ -82,6 +82,96 @@ func TestCodexReaderPrefersLogRateLimitsOverOlderSession(t *testing.T) {
 	}
 }
 
+func TestCodexReaderPicksNewestSessionFileWhenNoTimestamps(t *testing.T) {
+	// Regression: session files with no timestamps must be disambiguated by
+	// file mod time, so the newest file wins.
+	root := t.TempDir()
+	old := filepath.Join(root, "sessions", "2026", "05", "10")
+	new := filepath.Join(root, "sessions", "2026", "05", "16")
+	for _, dir := range []string{old, new} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	oldLine := `{"payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":90,"window_minutes":300},"secondary":{"used_percent":10,"window_minutes":10080}}}}`
+	newLine := `{"payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":20,"window_minutes":300},"secondary":{"used_percent":5,"window_minutes":10080}}}}`
+	if err := os.WriteFile(filepath.Join(old, "session.jsonl"), []byte(oldLine+"\n"), 0o644); err != nil {
+		t.Fatalf("write old: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(new, "session.jsonl"), []byte(newLine+"\n"), 0o644); err != nil {
+		t.Fatalf("write new: %v", err)
+	}
+
+	model, err := CodexReader{Root: root}.Read(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	snap := model.Snapshots["codex-cli"]
+	if snap == nil {
+		t.Fatalf("expected codex-cli snapshot: %#v", model.Snapshots)
+	}
+	metric := snap.Metrics["rate_limit_primary"]
+	if metric.Used == nil || *metric.Used != 20 {
+		t.Fatalf("expected primary used=20 (newest file), got %#v", metric)
+	}
+}
+
+func TestCodexWhamToSnapshotBothKeyStyles(t *testing.T) {
+	// primary/secondary (no _window suffix) — actual wham API style.
+	data := map[string]any{
+		"rate_limit": map[string]any{
+			"primary":   map[string]any{"used_percent": float64(30), "window_minutes": float64(300), "resets_at": "2026-05-17T23:00:00Z"},
+			"secondary": map[string]any{"used_percent": float64(10), "window_minutes": float64(10080), "resets_at": "2026-05-24T00:00:00Z"},
+		},
+	}
+	snap := codexWhamToSnapshot(data)
+	if snap == nil {
+		t.Fatal("expected snapshot, got nil")
+	}
+	prim := snap.Metrics["rate_limit_primary"]
+	if prim.Used == nil || *prim.Used != 30 {
+		t.Fatalf("primary used: %#v", prim)
+	}
+	sec := snap.Metrics["rate_limit_secondary"]
+	if sec.Used == nil || *sec.Used != 10 {
+		t.Fatalf("secondary used: %#v", sec)
+	}
+	// Verify window strings so quota.FormatWindowLabel produces 5h / 7d.
+	if sec.Window != "10080m" {
+		t.Fatalf("expected secondary window '10080m', got %v", sec.Window)
+	}
+
+	// primary_window / secondary_window suffix style.
+	data2 := map[string]any{
+		"rate_limit": map[string]any{
+			"primary_window":   map[string]any{"used_percent": float64(50), "window_minutes": float64(300)},
+			"secondary_window": map[string]any{"used_percent": float64(20), "window_minutes": float64(10080)},
+		},
+	}
+	snap2 := codexWhamToSnapshot(data2)
+	if snap2 == nil || snap2.Metrics["rate_limit_primary"].Used == nil {
+		t.Fatalf("suffix style: expected snapshot, got %#v", snap2)
+	}
+
+	// Wham API uses limit_window_seconds (604800 = 7d), not window_minutes.
+	data3 := map[string]any{
+		"rate_limit": map[string]any{
+			"primary_window": map[string]any{
+				"used_percent":         float64(100),
+				"limit_window_seconds": float64(604800),
+				"reset_at":             float64(1779542577),
+			},
+		},
+	}
+	snap3 := codexWhamToSnapshot(data3)
+	if snap3 == nil {
+		t.Fatal("expected wham snapshot with limit_window_seconds")
+	}
+	if got := snap3.Metrics["rate_limit_primary"].Window; got != "10080m" {
+		t.Fatalf("expected primary window 10080m, got %v", got)
+	}
+}
+
 func TestCodexReaderReturnsEmptyWithoutRateLimits(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sessions")

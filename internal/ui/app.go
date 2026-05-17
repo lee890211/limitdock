@@ -10,38 +10,30 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/lxn/walk"
 
-	openusage "limitdock/internal/connector/openusage"
 	"limitdock/internal/logging"
 	"limitdock/internal/native"
 	"limitdock/internal/paths"
 	"limitdock/internal/provider"
 	"limitdock/internal/quota"
-	"limitdock/internal/readmodel"
 	"limitdock/internal/settings"
 )
 
 const (
 	appName              = "LimitDock"
 	statusStarting       = "Starting"
-	statusStartingOU     = "Starting OpenUsage"
-	statusOUReady        = "OpenUsage ready"
-	statusOUUnavailable  = "OpenUsage unavailable"
-	statusWaitingOU      = "Waiting for OpenUsage"
 	statusRefreshing     = "Refreshing"
 	statusUpdatedPrefix  = "Updated "
 	statusUpdatedEmpty   = "Updated --:--:--"
 	statusReady          = "Ready"
 	statusUnavailable    = "Unavailable"
 	statusWaiting        = "Waiting"
-	textOpenUsage        = "OpenUsage"
-	textWaitingTitle     = "LimitDock waiting for OpenUsage"
-	textWaitingSideTitle = "Waiting for OpenUsage"
-	textWaitingDetail    = "Quota rows appear after telemetry refresh"
+	textWaitingTitle     = "LimitDock"
+	textWaitingSideTitle = "Waiting for data"
+	textWaitingDetail    = "Quota rows appear after first refresh"
 	trayHideStatus       = "Hide Status Bar"
 	trayShowStatus       = "Show Status Bar"
 	traySettings         = "Settings"
@@ -57,9 +49,7 @@ const (
 	settingsGaugeBands   = "Visible rows per card (max 4)"
 	settingsGaugeWarn    = "Warn when used %"
 	settingsGaugeCrit    = "Critical when used %"
-	settingsDiagnostics  = "OpenUsage / logs"
-	settingsOpenOU       = "OpenUsage settings"
-	settingsOpenOUFolder = "OpenUsage folder"
+	settingsDiagnostics  = "Logs"
 	settingsOpenLogs     = "Logs folder"
 	settingsOpenAppLog   = "LimitDock log"
 	settingsCopyDiag     = "Copy diagnostics"
@@ -81,7 +71,6 @@ const (
 )
 
 type Options struct {
-	NoDownload     bool
 	RefreshSeconds int
 }
 
@@ -89,8 +78,6 @@ type App struct {
 	paths   paths.Paths
 	cfg     settings.Settings
 	log     *logging.Logger
-	manager *openusage.Manager
-
 	mw       *walk.MainWindow
 	surface  *walk.CustomWidget
 	notify   *walk.NotifyIcon
@@ -111,9 +98,8 @@ type App struct {
 	mu             sync.Mutex
 	cards          []quota.Card
 	status         string
-	visible        bool
-	openUsageReady atomic.Bool
-	appbar         bool
+	visible  bool
+	appbar   bool
 	baseWork       *native.Rect
 	cardHits       []cardHit
 	gearHit        walk.Rectangle
@@ -154,16 +140,6 @@ func Run(p paths.Paths, opts Options) error {
 		lastCardHit: map[string]time.Time{},
 	}
 	app.ctx, app.cancel = context.WithCancel(context.Background())
-	app.manager = &openusage.Manager{
-		ExePath:    p.OpenUsageExe,
-		SocketPath: p.SocketPath,
-		Downloads:  p.Downloads,
-		ExtractDir: p.OpenUsageDir,
-		DaemonPID:  p.DaemonPID,
-		OutLog:     p.DaemonOutLog,
-		ErrLog:     p.DaemonErrLog,
-		Log:        log,
-	}
 	if err := os.WriteFile(p.AppPID, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644); err != nil {
 		log.Printf("Could not write app pid: %v", err)
 	}
@@ -173,7 +149,6 @@ func Run(p paths.Paths, opts Options) error {
 	if err := app.createWindow(); err != nil {
 		return err
 	}
-	go app.bootstrapOpenUsage(opts.NoDownload)
 	go app.refreshLoop()
 	go app.hoverLoop()
 	if code := app.mw.Run(); code != 0 {
@@ -273,46 +248,6 @@ func (a *App) refreshTrayVisibilityActions() {
 	}
 }
 
-func (a *App) bootstrapOpenUsage(noDownload bool) {
-	a.setStatus(statusStartingOU)
-	if err := a.manager.EnsureBinary(a.ctx, noDownload); err != nil {
-		if a.ctx.Err() != nil {
-			return
-		}
-		a.log.Printf("OpenUsage binary unavailable: %v", err)
-		a.setStatus(statusOUUnavailable)
-		return
-	}
-	if a.ctx.Err() != nil {
-		return
-	}
-	if err := a.manager.Start(); err != nil {
-		if a.ctx.Err() != nil {
-			return
-		}
-		a.log.Printf("Failed to launch daemon process: %v", err)
-		a.setStatus(statusWaitingOU)
-		return
-	}
-	for timeout := 12 * time.Second; a.ctx.Err() == nil; timeout = 5 * time.Second {
-		if a.manager.WaitReady(a.ctx, timeout) {
-			a.openUsageReady.Store(true)
-			a.setStatus(statusOUReady)
-			a.refreshOnce()
-			return
-		}
-		if a.ctx.Err() != nil {
-			return
-		}
-		a.setStatus(statusWaitingOU)
-		select {
-		case <-a.ctx.Done():
-			return
-		case <-time.After(10 * time.Second):
-		}
-	}
-}
-
 func (a *App) refreshLoop() {
 	a.refreshOnce()
 	for {
@@ -334,7 +269,7 @@ func (a *App) refreshOnce() {
 	model, err := provider.Aggregator{Readers: a.providerReaders(), Log: a.log}.Read(a.ctx)
 	if err != nil {
 		a.log.Printf("Refresh failed: %v", err)
-		a.setStatus(statusWaitingOU)
+		a.setStatus(statusWaiting)
 		return
 	}
 	cards := quota.Cards(model, a.cfg)
@@ -345,19 +280,13 @@ func (a *App) refreshOnce() {
 }
 
 func (a *App) providerReaders() []provider.Reader {
-	readers := []provider.Reader{
+	return []provider.Reader{
 		provider.ClaudeCodeReader{Log: a.log},
+		provider.CodexReader{Log: a.log},
+		provider.GeminiCLIReader{Log: a.log},
+		provider.CursorReader{Log: a.log},
+		provider.AntigravityReader{Log: a.log},
 	}
-	if a.openUsageReady.Load() {
-		readers = append(readers, openusage.Reader{
-			Client: readmodel.Client{SocketPath: a.paths.SocketPath},
-		})
-	}
-	readers = append(readers, provider.CodexReader{
-		Log: a.log,
-	})
-	readers = append(readers, provider.AntigravityReader{Log: a.log})
-	return readers
 }
 
 func (a *App) paint(canvas *walk.Canvas, update walk.Rectangle) error {
@@ -1253,46 +1182,18 @@ func (a *App) addDiagnosticsControls(parent walk.Container) {
 	pathText, _ := walk.NewTextEdit(parent)
 	pathText.SetCompactHeight(true)
 	_ = pathText.SetReadOnly(true)
-	_ = pathText.SetText(fmt.Sprintf("OpenUsage: %s\r\nLogs: %s", openUsageSettingsPath(), a.paths.Logs))
+	_ = pathText.SetText("Logs: " + a.paths.Logs)
 
 	row1, _ := walk.NewComposite(parent)
 	row1Layout := leftButtonLayout(row1)
-	openOU, _ := walk.NewPushButton(row1)
-	_ = openOU.SetText(settingsOpenOU)
-	openOUFolder, _ := walk.NewPushButton(row1)
-	_ = openOUFolder.SetText(settingsOpenOUFolder)
 	openLogs, _ := walk.NewPushButton(row1)
 	_ = openLogs.SetText(settingsOpenLogs)
+	openAppLog, _ := walk.NewPushButton(row1)
+	_ = openAppLog.SetText(settingsOpenAppLog)
+	copyDiag, _ := walk.NewPushButton(row1)
+	_ = copyDiag.SetText(settingsCopyDiag)
 	addButtonSpacer(row1, row1Layout)
 
-	row2, _ := walk.NewComposite(parent)
-	row2Layout := leftButtonLayout(row2)
-	openAppLog, _ := walk.NewPushButton(row2)
-	_ = openAppLog.SetText(settingsOpenAppLog)
-	copyDiag, _ := walk.NewPushButton(row2)
-	_ = copyDiag.SetText(settingsCopyDiag)
-	addButtonSpacer(row2, row2Layout)
-
-	openOU.Clicked().Attach(func() {
-		path := openUsageSettingsPath()
-		if err := ensureFile(path, "{}\r\n"); err != nil {
-			walk.MsgBox(a.mw, appName, err.Error(), walk.MsgBoxIconError)
-			return
-		}
-		if err := openFile(path); err != nil {
-			walk.MsgBox(a.mw, appName, err.Error(), walk.MsgBoxIconWarning)
-		}
-	})
-	openOUFolder.Clicked().Attach(func() {
-		path := filepath.Dir(openUsageSettingsPath())
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			walk.MsgBox(a.mw, appName, err.Error(), walk.MsgBoxIconError)
-			return
-		}
-		if err := openFolder(path); err != nil {
-			walk.MsgBox(a.mw, appName, err.Error(), walk.MsgBoxIconWarning)
-		}
-	})
 	openLogs.Clicked().Attach(func() {
 		if err := os.MkdirAll(a.paths.Logs, 0o755); err != nil {
 			walk.MsgBox(a.mw, appName, err.Error(), walk.MsgBoxIconError)
@@ -1326,19 +1227,11 @@ func (a *App) diagnosticsText() string {
 		"settings.json: " + a.paths.Settings,
 		"Engine: " + a.paths.Engine,
 		"Logs: " + a.paths.Logs,
-		"OpenUsage settings: " + openUsageSettingsPath(),
-		"OpenUsage exe: " + a.paths.OpenUsageExe,
-		"OpenUsage socket: " + a.paths.SocketPath,
-		"Daemon stdout: " + a.paths.DaemonOutLog,
-		"Daemon stderr: " + a.paths.DaemonErrLog,
 	}, "\r\n")
 }
 
 func (a *App) cleanup() {
 	a.cancel()
-	if !a.isShutdownDone() && a.manager != nil {
-		a.manager.Stop()
-	}
 	if base, ok := a.unregisterAppBar(); ok {
 		if err := native.ScheduleWorkAreaRestore(base); err != nil {
 			a.log.Printf("Reserved delayed workarea restore failed to start: %v", err)
@@ -1370,9 +1263,6 @@ func (a *App) beginShutdown() {
 }
 
 func (a *App) finishShutdown() {
-	if a.manager != nil {
-		a.manager.Stop()
-	}
 	a.shutdownMu.Lock()
 	a.shutdownDone = true
 	a.shutdownMu.Unlock()
@@ -1822,15 +1712,6 @@ func placeSettingsDialog(dlg *walk.Dialog, width, height int) {
 	_ = dlg.SetBoundsPixels(walk.Rectangle{X: x, Y: y, Width: width, Height: height})
 }
 
-func openUsageSettingsPath() string {
-	appData := os.Getenv("APPDATA")
-	if appData == "" {
-		home, _ := os.UserHomeDir()
-		appData = filepath.Join(home, "AppData", "Roaming")
-	}
-	return filepath.Join(appData, "openusage", "settings.json")
-}
-
 func ensureFile(path string, initial string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -2020,14 +1901,6 @@ func ribbonStatusParts(status string) (string, string) {
 		return strings.TrimSpace(statusUpdatedPrefix), strings.TrimSpace(after)
 	}
 	switch text {
-	case statusStartingOU:
-		return statusStarting, textOpenUsage
-	case statusOUReady:
-		return statusReady, textOpenUsage
-	case statusOUUnavailable:
-		return statusUnavailable, textOpenUsage
-	case statusWaitingOU:
-		return statusWaiting, textOpenUsage
 	case statusRefreshing:
 		return statusRefreshing, ""
 	default:

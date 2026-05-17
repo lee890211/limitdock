@@ -10,10 +10,10 @@ func TestIsForbiddenReleaseEntry(t *testing.T) {
 		{rel: "settings.json", want: true},
 		{rel: "docs/settings.json", want: true},
 		{rel: "settings.example.json", want: false},
-		{rel: "engine/state/", want: false},
-		{rel: "engine/state/limitdock.pid", want: true},
-		{rel: "engine/state/logs/limitdock.log", want: true},
-		{rel: "engine/downloads/openusage_windows_amd64/configs/example_settings.json", want: false},
+		{rel: "state/", want: false},
+		{rel: "state/limitdock.pid", want: true},
+		{rel: "state/logs/limitdock.log", want: true},
+		{rel: "assets/icons/claude.png", want: false},
 	}
 
 	for _, tc := range cases {

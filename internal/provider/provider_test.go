@@ -33,10 +33,10 @@ func (r fixedFallbackReader) FallbackProviderID() string {
 
 func TestAggregatorMergesReaderSnapshots(t *testing.T) {
 	model, err := Aggregator{Readers: []Reader{
-		fixedReader{name: "openusage", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+		fixedReader{name: "reader-a", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
 			"codex-cli": {ProviderID: "codex", Metrics: map[string]readmodel.Metric{"rate_limit_primary": {}}},
 		}}},
-		fixedReader{name: "antigravity", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+		fixedReader{name: "reader-b", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
 			"antigravity-local": {ProviderID: "antigravity", Metrics: map[string]readmodel.Metric{"quota_model_gemini": {}}},
 		}}},
 	}}.Read(context.Background())
@@ -50,8 +50,8 @@ func TestAggregatorMergesReaderSnapshots(t *testing.T) {
 
 func TestAggregatorReturnsErrorWhenAllReadersFailOrEmpty(t *testing.T) {
 	_, err := Aggregator{Readers: []Reader{
-		fixedReader{name: "openusage", err: errors.New("socket missing")},
-		fixedReader{name: "antigravity", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{}}},
+		fixedReader{name: "reader-a", err: errors.New("socket missing")},
+		fixedReader{name: "reader-b", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{}}},
 	}}.Read(context.Background())
 	if err == nil {
 		t.Fatalf("expected first reader error when no snapshots are available")
@@ -60,25 +60,25 @@ func TestAggregatorReturnsErrorWhenAllReadersFailOrEmpty(t *testing.T) {
 
 func TestAggregatorKeepsFirstDuplicateSnapshot(t *testing.T) {
 	model, err := Aggregator{Readers: []Reader{
-		fixedReader{name: "openusage", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
-			"shared": {ProviderID: "openusage"},
+		fixedReader{name: "reader-first", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+			"shared": {ProviderID: "first"},
 		}}},
-		fixedReader{name: "custom", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
-			"shared": {ProviderID: "custom"},
+		fixedReader{name: "reader-second", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+			"shared": {ProviderID: "second"},
 		}}},
 	}}.Read(context.Background())
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if got := model.Snapshots["shared"].ProviderID; got != "openusage" {
+	if got := model.Snapshots["shared"].ProviderID; got != "first" {
 		t.Fatalf("expected first duplicate to win, got %q", got)
 	}
 }
 
 func TestAggregatorSkipsFallbackWhenProviderAlreadyHasQuota(t *testing.T) {
 	model, err := Aggregator{Readers: []Reader{
-		fixedReader{name: "openusage", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
-			"codex-openusage": {ProviderID: "codex", Metrics: map[string]readmodel.Metric{
+		fixedReader{name: "reader-primary", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+			"codex-primary": {ProviderID: "codex", Metrics: map[string]readmodel.Metric{
 				"rate_limit_primary": {Remaining: floatPtrForTest(80), Unit: "%"},
 			}},
 		}}},
@@ -94,8 +94,8 @@ func TestAggregatorSkipsFallbackWhenProviderAlreadyHasQuota(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if model.Snapshots["codex-openusage"] == nil {
-		t.Fatalf("expected OpenUsage snapshot to remain")
+	if model.Snapshots["codex-primary"] == nil {
+		t.Fatalf("expected primary snapshot to remain")
 	}
 	if model.Snapshots["codex-cli"] != nil {
 		t.Fatalf("expected Codex fallback snapshot to be skipped")
@@ -104,8 +104,8 @@ func TestAggregatorSkipsFallbackWhenProviderAlreadyHasQuota(t *testing.T) {
 
 func TestAggregatorUsesFallbackWhenProviderHasNoQuota(t *testing.T) {
 	model, err := Aggregator{Readers: []Reader{
-		fixedReader{name: "openusage", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
-			"codex-openusage": {ProviderID: "codex", Metrics: map[string]readmodel.Metric{}},
+		fixedReader{name: "reader-primary", model: &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+			"codex-primary": {ProviderID: "codex", Metrics: map[string]readmodel.Metric{}},
 		}}},
 		fixedFallbackReader{
 			providerID: "codex",
@@ -120,7 +120,7 @@ func TestAggregatorUsesFallbackWhenProviderHasNoQuota(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	if model.Snapshots["codex-cli"] == nil {
-		t.Fatalf("expected Codex fallback snapshot when OpenUsage has no quota")
+		t.Fatalf("expected Codex fallback snapshot when primary has no quota")
 	}
 }
 

@@ -6,22 +6,14 @@ import (
 )
 
 type Paths struct {
-	Root         string
-	Engine       string
-	Bin          string
-	State        string
-	Downloads    string
-	OpenUsageDir string
-	OpenUsageExe string
-	SocketPath   string
-	Spool        string
-	Logs         string
-	DaemonOutLog string
-	DaemonErrLog string
-	AppPID       string
-	DaemonPID    string
-	IconDir      string
-	Settings     string
+	Root     string
+	Engine   string
+	State    string
+	Spool    string
+	Logs     string
+	AppPID   string
+	IconDir  string
+	Settings string
 }
 
 func ResolveRoot() string {
@@ -44,35 +36,22 @@ func ResolveRoot() string {
 }
 
 func New(root string) Paths {
-	engine := filepath.Join(root, "engine")
-	state := filepath.Join(engine, "state")
-	downloads := filepath.Join(engine, "downloads")
-	openUsageDir := filepath.Join(downloads, "openusage_windows_amd64")
-	home, _ := os.UserHomeDir()
-	socketPath := filepath.Join(home, ".local", "state", "openusage", "telemetry.sock")
+	state := filepath.Join(root, "state")
 	logs := filepath.Join(state, "logs")
 	return Paths{
-		Root:         root,
-		Engine:       engine,
-		Bin:          filepath.Join(engine, "bin"),
-		State:        state,
-		Downloads:    downloads,
-		OpenUsageDir: openUsageDir,
-		OpenUsageExe: filepath.Join(openUsageDir, "openusage.exe"),
-		SocketPath:   socketPath,
-		Spool:        filepath.Join(state, "limitdock-spool"),
-		Logs:         logs,
-		DaemonOutLog: filepath.Join(logs, "openusage-daemon.out.log"),
-		DaemonErrLog: filepath.Join(logs, "openusage-daemon.err.log"),
-		AppPID:       filepath.Join(state, "limitdock.pid"),
-		DaemonPID:    filepath.Join(state, "openusage-daemon.pid"),
-		IconDir:      filepath.Join(root, "assets", "icons"),
-		Settings:     filepath.Join(root, "settings.json"),
+		Root:     root,
+		Engine:   filepath.Join(root, "engine"), // kept for migration; no longer created
+		State:    state,
+		Spool:    filepath.Join(state, "limitdock-spool"),
+		Logs:     logs,
+		AppPID:   filepath.Join(state, "limitdock.pid"),
+		IconDir:  filepath.Join(root, "assets", "icons"),
+		Settings: filepath.Join(root, "settings.json"),
 	}
 }
 
 func Ensure(p Paths) error {
-	for _, dir := range []string{p.Bin, p.State, p.Downloads, p.Spool, p.Logs} {
+	for _, dir := range []string{p.State, p.Spool, p.Logs} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}

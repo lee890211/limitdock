@@ -1,6 +1,6 @@
 # User Manual
 
-LimitDock is a Windows dock for quota rows produced from the OpenUsage.sh read model. It is designed to be glanced at while coding, not used as a dashboard.
+LimitDock is a Windows dock that shows remaining AI tool quota at a glance. It reads quota data directly from each provider's local credentials or session files. No external daemon is required.
 
 ## Start LimitDock
 
@@ -16,7 +16,7 @@ From the repository, run:
 go run .\cmd\limitdock
 ```
 
-LimitDock starts the bundled or downloaded OpenUsage.sh daemon, reads the local read model, and renders provider cards that expose quota-like rows.
+LimitDock reads quota directly from each provider and renders provider cards that expose quota-like rows.
 
 ## Top Or Bottom Ribbon
 
@@ -76,8 +76,8 @@ Right-click the tray icon:
 
 - `Hide Status Bar`: hides the dock, unregisters reserved appbar space, restores the Windows work area, disables hover reveal, and pauses refresh.
 - `Show Status Bar`: shows the dock again using saved settings.
-- `Settings`: opens LimitDock docking, theme, refresh, startup, threshold, OpenUsage, and log/diagnostic controls.
-- `Exit`: closes LimitDock and stops the managed OpenUsage daemon.
+- `Settings`: opens LimitDock docking, theme, refresh, startup, threshold, and log/diagnostic controls.
+- `Exit`: closes LimitDock.
 
 Hide is not persisted. A fresh launch shows the dock again.
 
@@ -103,39 +103,36 @@ Dock mode, dock edge, theme, overlay opacity, auto-slide, refresh interval, gaug
 
 `Overlay opacity %` applies only in overlay mode and can be set from 35 to 100. Dragging it previews the opacity immediately. `Cancel` restores the previous opacity, and `Save` persists it.
 
-The settings window also includes `OpenUsage / logs` controls. Use them to open `%APPDATA%\openusage\settings.json`, open the OpenUsage settings folder, browse LimitDock logs, open `limitdock.log`, or copy diagnostic paths for troubleshooting. Antigravity path settings are intentionally absent because the Go version auto-detects local Antigravity quota sources.
+The settings window includes log and diagnostic controls. Use them to browse LimitDock logs, open `limitdock.log`, or copy diagnostic paths for troubleshooting. Antigravity path settings are intentionally absent because LimitDock auto-detects local Antigravity quota sources.
 
 `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Clear the checkbox to remove the value. Older `LimitDock.lnk` startup shortcuts are cleaned up when this setting changes.
 
 ## Provider Behavior
 
-LimitDock uses OpenUsage as the source of truth for providers that OpenUsage supports. The current upstream list is documented in [openusage all providers](https://github.com/janekbaraniewski/openusage#all-providers). LimitDock renders only quota-like rows, so usage-only or cost-only provider data may be omitted from the dock.
+LimitDock renders only quota-like rows. A provider is absent from the dock if no quota, rate-limit, credit, or reset row is available.
 
 | Provider or agent | Source | Notes |
 | --- | --- | --- |
-| Claude Code | OpenUsage | Appears when OpenUsage exposes quota-like rows. |
-| Cursor | OpenUsage | Plan-cycle quota only. |
-| GitHub Copilot | OpenUsage | Appears when chat/completion quota rows are present. |
-| Codex CLI | OpenUsage, then LimitDock fallback | OpenUsage wins. The fallback scans local Codex session rate-limit events only when OpenUsage has no Codex quota rows. |
-| Gemini CLI | OpenUsage | Model-specific rows are preferred over aggregate duplicates. |
-| OpenCode, Ollama, OpenAI, Anthropic, OpenRouter, Groq, Mistral AI, DeepSeek, Moonshot/Kimi, Perplexity, xAI/Grok, Z.AI, Google Gemini API, Alibaba Cloud | OpenUsage | Appears only when OpenUsage exposes quota-like rows in its read model. |
-| Antigravity | LimitDock custom reader | Quota-only. Requires readable local quota data from the running Antigravity language server or common `%APPDATA%\Antigravity` cache files. If Antigravity is closed or no quota row exists, no card is shown. |
+| Claude Code | LimitDock native reader | Calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Returns real utilization percent, not a time-elapsed estimate. |
+| Codex CLI | LimitDock native reader | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` rows. |
+| Gemini CLI | LimitDock native reader | Uses `~/.gemini/oauth_creds.json`, refreshes when needed, and calls Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
+| Cursor | LimitDock native reader | Uses `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, refreshes when needed, and calls Cursor Connect `GetCurrentPeriodUsage`. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
+| Antigravity | LimitDock native reader | Reads local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. No card is shown if no quota rows are present. |
 
 Codex:
 
 - Shows `rate_limit_*` rows.
-- Keeps Spark/Bengalfox rows and labels them from OpenUsage attributes when available.
-- Uses OpenUsage first. If OpenUsage does not expose Codex quota rows, the local fallback reader scans recent Codex session rate-limit events and emits the same quota shape.
+- Keeps Spark/Bengalfox rows and labels them from session event attributes.
+
+Gemini CLI:
+
+- Shows model-specific quota rows when available.
+- Suppresses aggregate duplicate rows such as bare `quota`, `quota_flash`, or `quota_pro` when model rows exist.
 
 Cursor:
 
 - Shows only the plan-cycle quota row from `plan_percent_used`.
 - Uses `billing_cycle_end` for reset text when present.
-
-Gemini:
-
-- Shows model-specific quota rows when available.
-- Suppresses aggregate duplicate rows such as bare `quota`, `quota_flash`, or `quota_pro` when model rows exist.
 
 Antigravity:
 
@@ -143,8 +140,6 @@ Antigravity:
 - LimitDock does not show an Antigravity status-only card. It needs percent/reset or prompt-credit quota data.
 - LimitDock tries the running local language-server endpoint and common `%APPDATA%\Antigravity` cache locations automatically.
 - There are no Antigravity settings. If no quota data is available, no Antigravity card is rendered.
-
-Providers listed in OpenUsage should be handled through OpenUsage first. Providers outside OpenUsage should be added through a LimitDock custom reader that emits the same normalized quota rows.
 
 ## Build And Release
 

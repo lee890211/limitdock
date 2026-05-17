@@ -7,7 +7,7 @@ LimitDock is a compact Windows desktop dock that shows remaining agent quota at 
 ## What It Shows
 
 - Remaining quota only, grouped by provider, model or plan bucket, reset countdown, and percent.
-- Codex rate-limit rows, including Spark labels exposed by openusage attributes or the local Codex fallback reader.
+- Codex rate-limit rows, including Spark labels from local Codex session events.
 - Cursor plan-cycle quota from `plan_percent_used` with `billing_cycle_end` reset text.
 - Gemini model-specific quota rows, while suppressing aggregate duplicates when precise model rows exist.
 - Antigravity quota rows from the LimitDock custom reader when local quota-like data is available.
@@ -21,21 +21,21 @@ LimitDock uses native provider readers for each supported tool. All quota data i
 
 ## Provider Support
 
-LimitDock renders only quota-like rows. A provider can be detected by OpenUsage and still be absent from LimitDock if OpenUsage does not expose a quota, rate-limit, credit, or reset row for it.
+LimitDock renders only quota-like rows. A provider is absent from the dock if no quota, rate-limit, credit, or reset row is available from its native reader.
 
 | Provider or agent | Source | LimitDock behavior |
 | --- | --- | --- |
 | Claude Code | LimitDock native reader | Calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Returns real utilization percent, not a time-elapsed estimate. |
-| Codex CLI | LimitDock native reader | Scans recent `.codex/sessions` JSONL events for `rate_limits` rows. |
+| Codex CLI | LimitDock native reader | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` events so 5h and 7d windows stay accurate. |
 | Antigravity | LimitDock native reader | Reads local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. No card is shown if no quota rows are present. |
-| Gemini CLI | OpenUsage (native reader planned) | Model-specific quota rows are preferred; aggregate duplicate rows are suppressed when precise model rows exist. |
-| Cursor | OpenUsage (native reader planned) | Plan-cycle quota from `plan_percent_used`; reset comes from `billing_cycle_end` when present. |
+| Gemini CLI | LimitDock native reader | Uses `~/.gemini/oauth_creds.json` (or related credential files), refreshes when needed, and calls Google Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
+| Cursor | LimitDock native reader | Reads the token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, refreshes when needed, and calls Cursor Connect `GetCurrentPeriodUsage` on `api2.cursor.sh`. Plan-cycle quota from `plan_percent_used`; reset from `billing_cycle_end` when present. |
 
 ## User Guide
 
 ### Ribbon Mode
 
-Use `bottom` or `top` for a horizontal ribbon. Each provider card shows one or more quota rows. Row labels keep the model or plan bucket, including the metering window when openusage exposes it; the timing column shows only the reset countdown. Remaining percent is drawn inside the gauge. When two rows are visible, they use two full-width lines; three or four rows use a compact grid. Long labels are shortened before reset time or remaining percent disappear. On wide displays, the ribbon can fit up to five provider cards before overflowing.
+Use `bottom` or `top` for a horizontal ribbon. Each provider card shows one or more quota rows. Row labels keep the model or plan bucket, including the metering window when available; the timing column shows only the reset countdown. Remaining percent is drawn inside the gauge. When two rows are visible, they use two full-width lines; three or four rows use a compact grid. Long labels are shortened before reset time or remaining percent disappear. On wide displays, the ribbon can fit up to five provider cards before overflowing.
 
 The `Updated` panel is clickable. Click it to force an immediate refresh even if the automatic refresh interval has not elapsed.
 
@@ -81,8 +81,8 @@ Right-click the tray icon:
 
 - `Hide Status Bar`: hides the dock, unregisters reserved mode, restores the Windows work area, disables hover reveal, and pauses refresh. Hide is session-only.
 - `Show Status Bar`: restores the saved mode, edge, and pin state, then refreshes.
-- `Settings`: opens docking, theme, refresh, startup, threshold, OpenUsage, and log/diagnostic controls.
-- `Exit`: closes LimitDock and stops the managed openusage daemon.
+- `Settings`: opens docking, theme, refresh, startup, threshold, and log/diagnostic controls.
+- `Exit`: closes LimitDock.
 
 ### Docking
 
@@ -95,7 +95,7 @@ Edges are `bottom`, `top`, `left`, and `right`. `Settings` shows them as four vi
 
 The `Theme` row uses two visual day/night buttons. `Overlay opacity %` previews transparency live in overlay mode; Cancel restores the previous value and Save persists it. `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
 
-Antigravity support is quota-only and automatic. If OpenUsage does not expose Antigravity, LimitDock tries its custom reader and renders a card only when it can read local percent/reset or prompt-credit quota data. It does not add an installation/status placeholder card.
+Antigravity support is quota-only and automatic. LimitDock renders a card only when it can read local percent/reset or prompt-credit quota data. It does not add an installation/status placeholder card.
 
 ## Install
 
@@ -113,7 +113,7 @@ Requirements:
 
 ```text
 go test ./...
-go build -ldflags "-H windowsgui" -o engine\bin\LimitDock.exe .\cmd\limitdock
+go build -ldflags "-H windowsgui" -o LimitDock.exe .\cmd\limitdock
 go run .\cmd\limitdock-release -version vYYYYMMDD
 ```
 
@@ -135,4 +135,4 @@ For docking changes, run the project smoke workflow in `.codex/skills/limitdock-
 
 ## Repository Hygiene
 
-Runtime databases, logs, PID files, downloaded openusage binaries, release folders, local Go caches, and `settings.json` are ignored. Keep `settings.example.json` as the shareable default.
+Runtime databases, logs, PID files, release folders, local Go caches, and `settings.json` are ignored. Keep `settings.example.json` as the shareable default.

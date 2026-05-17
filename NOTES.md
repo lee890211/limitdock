@@ -6,9 +6,10 @@ Current architecture:
 
 - Read provider data through a single Go provider aggregator (`internal/provider`).
 - Claude Code: native reader calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` (or `CLAUDE_CODE_OAUTH_TOKEN`). Returns real utilization percent, not a time-elapsed estimate.
-- Codex CLI: native reader scans recent `.codex/sessions` JSONL events for `rate_limits` rows.
+- Codex CLI: native reader merges ChatGPT wham usage with `.codex` session/log `rate_limits` rows.
 - Antigravity: native reader checks local language-server status and `%APPDATA%\Antigravity` cache for quota rows.
-- Gemini CLI, Cursor: currently read through the OpenUsage connector; native readers are planned (see GitHub issues).
+- Gemini CLI: native reader uses `~/.gemini/oauth_creds.json` and Code Assist quota APIs.
+- Cursor: native reader uses `state.vscdb` and Cursor Connect usage on `api2.cursor.sh`.
 - Normalize quota-like rows into compact provider cards.
 - Render top, bottom, left, or right docks in overlay or reserved mode.
 
@@ -25,4 +26,4 @@ Release shape:
 
 - Publish `dist/LimitDock-<version>.zip`.
 - Include `LimitDock.exe`, icons, README screenshot assets, and `settings.example.json`.
-- Do not include personal settings, runtime databases, logs, PID files, Go caches, or downloaded OpenUsage binaries unless intentionally making an offline release.
+- Do not include personal settings, runtime databases, logs, or PID files.

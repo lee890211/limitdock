@@ -111,7 +111,7 @@ func SnapshotToCard(key string, snap *readmodel.Snapshot, cfg settings.Settings)
 		message = snap.Message
 	}
 	if message == "" && main == "Loading" {
-		message = "Waiting for OpenUsage telemetry."
+		message = "Waiting for quota data."
 	}
 	return Card{
 		Name:           name,
