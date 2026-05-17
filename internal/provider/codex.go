@@ -146,14 +146,10 @@ func fetchCodexWhamUsage(ctx context.Context, token string) (map[string]any, err
 }
 
 // codexWhamToSnapshot converts wham API response to a Snapshot.
-// Expected shape:
+// Accepted shapes (rate_limit key may be "rate_limit" or "rateLimit"):
 //
-//	{
-//	  "rate_limit": {
-//	    "primary_window":   {"used_percent": 45.2, "window_minutes": 60,   "resets_at": "..."},
-//	    "secondary_window": {"used_percent": 12.8, "window_minutes": 1440, "resets_at": "..."}
-//	  }
-//	}
+//	{"rate_limit": {"primary_window": {...}, "secondary_window": {...}}}
+//	{"rate_limit": {"primary": {...}, "secondary": {...}}}
 func codexWhamToSnapshot(data map[string]any) *readmodel.Snapshot {
 	rl := objectAny(data, "rate_limit", "rateLimit")
 	if rl == nil {
@@ -161,7 +157,7 @@ func codexWhamToSnapshot(data map[string]any) *readmodel.Snapshot {
 	}
 	limits := map[string]any{"limit_id": "codex"}
 	for _, name := range []string{"primary", "secondary"} {
-		win := objectAny(rl, name+"_window", name+"Window")
+		win := objectAny(rl, name+"_window", name+"Window", name)
 		if win == nil {
 			continue
 		}

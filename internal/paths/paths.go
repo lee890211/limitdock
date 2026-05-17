@@ -8,9 +8,7 @@ import (
 type Paths struct {
 	Root     string
 	Engine   string
-	Bin      string
 	State    string
-	Downloads string
 	Spool    string
 	Logs     string
 	AppPID   string
@@ -40,24 +38,21 @@ func ResolveRoot() string {
 func New(root string) Paths {
 	engine := filepath.Join(root, "engine")
 	state := filepath.Join(engine, "state")
-	downloads := filepath.Join(engine, "downloads")
 	logs := filepath.Join(state, "logs")
 	return Paths{
-		Root:      root,
-		Engine:    engine,
-		Bin:       filepath.Join(engine, "bin"),
-		State:     state,
-		Downloads: downloads,
-		Spool:     filepath.Join(state, "limitdock-spool"),
-		Logs:      logs,
-		AppPID:    filepath.Join(state, "limitdock.pid"),
-		IconDir:   filepath.Join(root, "assets", "icons"),
-		Settings:  filepath.Join(root, "settings.json"),
+		Root:     root,
+		Engine:   engine,
+		State:    state,
+		Spool:    filepath.Join(state, "limitdock-spool"),
+		Logs:     logs,
+		AppPID:   filepath.Join(state, "limitdock.pid"),
+		IconDir:  filepath.Join(root, "assets", "icons"),
+		Settings: filepath.Join(root, "settings.json"),
 	}
 }
 
 func Ensure(p Paths) error {
-	for _, dir := range []string{p.Bin, p.State, p.Downloads, p.Spool, p.Logs} {
+	for _, dir := range []string{p.State, p.Spool, p.Logs} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}

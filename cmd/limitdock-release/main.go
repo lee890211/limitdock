@@ -32,8 +32,6 @@ func main() {
 		releaseDir,
 		filepath.Join(releaseDir, "assets"),
 		filepath.Join(releaseDir, "docs", "images"),
-		filepath.Join(releaseDir, "engine", "bin"),
-		filepath.Join(releaseDir, "engine", "downloads"),
 		filepath.Join(releaseDir, "engine", "state"),
 	} {
 		must(os.MkdirAll(dir, 0o755))
@@ -80,7 +78,7 @@ func run(root string, name string, args ...string) {
 	cmd.Dir = root
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(root, "engine", ".gocache"))
+	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(root, ".gocache"))
 	must(cmd.Run())
 }
 

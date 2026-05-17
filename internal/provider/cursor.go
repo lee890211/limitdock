@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	cursorTimeout  = 8 * time.Second
-	cursorUsageURL = "https://www.cursor.com/api/usage"
-	// Public client ID embedded in the Cursor desktop app (no secret required).
-	cursorOAuthClientID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
+	cursorTimeout    = 8 * time.Second
+	cursorUsageURL   = "https://www.cursor.com/api/usage"
+	// Public credentials embedded in the Cursor desktop app binary.
+	cursorOAuthClientID  = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
+	cursorOAuthTokenURL  = "https://prod.authentication.cursor.sh/oauth/token"
 )
 
 var errCursorUnauthorized = errors.New("cursor: 401 unauthorized")
@@ -143,7 +144,7 @@ func refreshCursorToken(ctx context.Context, refreshToken string) (string, error
 		"refresh_token": {refreshToken},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api2.cursor.sh/oauth/token",
+		cursorOAuthTokenURL,
 		strings.NewReader(vals.Encode()))
 	if err != nil {
 		return "", err

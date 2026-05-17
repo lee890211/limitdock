@@ -116,6 +116,44 @@ func TestCodexReaderPicksNewestSessionFileWhenNoTimestamps(t *testing.T) {
 	}
 }
 
+func TestCodexWhamToSnapshotBothKeyStyles(t *testing.T) {
+	// primary/secondary (no _window suffix) — actual wham API style.
+	data := map[string]any{
+		"rate_limit": map[string]any{
+			"primary":   map[string]any{"used_percent": float64(30), "window_minutes": float64(300), "resets_at": "2026-05-17T23:00:00Z"},
+			"secondary": map[string]any{"used_percent": float64(10), "window_minutes": float64(10080), "resets_at": "2026-05-24T00:00:00Z"},
+		},
+	}
+	snap := codexWhamToSnapshot(data)
+	if snap == nil {
+		t.Fatal("expected snapshot, got nil")
+	}
+	prim := snap.Metrics["rate_limit_primary"]
+	if prim.Used == nil || *prim.Used != 30 {
+		t.Fatalf("primary used: %#v", prim)
+	}
+	sec := snap.Metrics["rate_limit_secondary"]
+	if sec.Used == nil || *sec.Used != 10 {
+		t.Fatalf("secondary used: %#v", sec)
+	}
+	// Verify window strings so quota.FormatWindowLabel produces 5h / 7d.
+	if sec.Window != "10080m" {
+		t.Fatalf("expected secondary window '10080m', got %v", sec.Window)
+	}
+
+	// primary_window / secondary_window suffix style.
+	data2 := map[string]any{
+		"rate_limit": map[string]any{
+			"primary_window":   map[string]any{"used_percent": float64(50), "window_minutes": float64(300)},
+			"secondary_window": map[string]any{"used_percent": float64(20), "window_minutes": float64(10080)},
+		},
+	}
+	snap2 := codexWhamToSnapshot(data2)
+	if snap2 == nil || snap2.Metrics["rate_limit_primary"].Used == nil {
+		t.Fatalf("suffix style: expected snapshot, got %#v", snap2)
+	}
+}
+
 func TestCodexReaderReturnsEmptyWithoutRateLimits(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sessions")
