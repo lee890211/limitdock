@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -299,7 +301,7 @@ func jwtExpiryUnix(token string) (int64, bool) {
 //	  "billing_cycle_end": "2024-12-31T23:59:59.999Z"
 //	}
 //
-// Computes plan_percent_used = (total - remaining) / total * 100.
+// Computes plan_percent_used as consumption % (remaining = 100 - used).
 func cursorUsageToSnapshot(data map[string]any, accountID string) *readmodel.Snapshot {
 	if data == nil {
 		return nil
@@ -314,41 +316,53 @@ func cursorUsageToSnapshot(data map[string]any, accountID string) *readmodel.Sna
 	metrics := map[string]readmodel.Metric{}
 	resets := map[string]any{}
 
+	var cycleStart, cycleEnd time.Time
+	if t, ok := cursorTimeFromMap(data, "billingCycleStart", "billing_cycle_start"); ok {
+		cycleStart = t
+	}
+	if t, ok := cursorTimeFromMap(data, "billingCycleEnd", "billing_cycle_end", "cycle_end", "period_end"); ok {
+		cycleEnd = t
+	}
+	window := cursorCycleWindowLabel(cycleStart, cycleEnd)
+
 	if pu := objectAny(data, "planUsage"); pu != nil {
-		if v, ok := firstNumber(pu, "totalPercentUsed", "total_percent_used"); ok {
+		if t, ok := cursorTimeFromMap(pu, "billingCycleEnd", "billing_cycle_end"); ok && cycleEnd.IsZero() {
+			cycleEnd = t
+		}
+		if t, ok := cursorTimeFromMap(pu, "billingCycleStart", "billing_cycle_start"); ok && cycleStart.IsZero() {
+			cycleStart = t
+		}
+		window = cursorCycleWindowLabel(cycleStart, cycleEnd)
+
+		usedPct, ok := cursorPlanPercentUsed(pu)
+		if ok {
 			metrics["plan_percent_used"] = readmodel.Metric{
-				Used:   floatPtr(v),
+				Used:   floatPtr(usedPct),
 				Unit:   "%",
-				Window: "billing-cycle",
+				Window: window,
 			}
 		}
 	}
-	if end, ok := firstNumber(data, "billingCycleEnd", "billing_cycle_end"); ok && end > 0 {
-		if end > 1e12 {
-			end = end / 1000
-		}
-		resets["billing_cycle_end"] = time.Unix(int64(end), 0).UTC().Format(time.RFC3339)
-	}
 
-	// Compute plan_percent_used from premium_requests fields
-	if total, ok := firstNumber(data, "premium_requests_total", "gpt4_requests_total",
-		"total_requests", "monthly_limit"); ok && total > 0 {
-		remaining, _ := firstNumber(data, "premium_requests_remaining", "gpt4_requests_remaining", "requests_remaining")
-		used := 100.0 * (total - remaining) / total
-		metrics["plan_percent_used"] = readmodel.Metric{
-			Used:   floatPtr(used),
-			Unit:   "%",
-			Window: "billing-cycle",
+	if _, exists := metrics["plan_percent_used"]; !exists {
+		if total, ok := firstNumber(data, "premium_requests_total", "gpt4_requests_total",
+			"total_requests", "monthly_limit"); ok && total > 0 {
+			remaining, _ := firstNumber(data, "premium_requests_remaining", "gpt4_requests_remaining", "requests_remaining")
+			used := 100.0 * (total - remaining) / total
+			metrics["plan_percent_used"] = readmodel.Metric{
+				Used:   floatPtr(used),
+				Unit:   "%",
+				Window: window,
+			}
 		}
 	}
 
-	// Direct plan_percent_used field
 	if _, exists := metrics["plan_percent_used"]; !exists {
 		if v, ok := firstNumber(data, "plan_percent_used", "usage_percent", "used_percent"); ok {
 			metrics["plan_percent_used"] = readmodel.Metric{
 				Used:   floatPtr(v),
 				Unit:   "%",
-				Window: "billing-cycle",
+				Window: window,
 			}
 		}
 	}
@@ -357,9 +371,8 @@ func cursorUsageToSnapshot(data map[string]any, accountID string) *readmodel.Sna
 		return nil
 	}
 
-	// Billing cycle end → reset key for plan_percent_used
-	if end := firstString(data, "billing_cycle_end", "billingCycleEnd", "cycle_end", "period_end"); end != "" {
-		resets["billing_cycle_end"] = end
+	if !cycleEnd.IsZero() {
+		resets["billing_cycle_end"] = cycleEnd.UTC().Format(time.RFC3339)
 	}
 
 	return &readmodel.Snapshot{
@@ -369,6 +382,108 @@ func cursorUsageToSnapshot(data map[string]any, accountID string) *readmodel.Sna
 		Metrics:    metrics,
 		Resets:     resets,
 		Raw:        map[string]any{"source": "cursor-api"},
+	}
+}
+
+func cursorPlanPercentUsed(planUsage map[string]any) (float64, bool) {
+	if v, ok := firstNumber(planUsage, "totalPercentUsed", "total_percent_used"); ok {
+		return v, true
+	}
+	limit, ok := firstNumber(planUsage, "limit", "includedAmountCents", "included_amount_cents")
+	if !ok || limit <= 0 {
+		return 0, false
+	}
+	remaining, _ := firstNumber(planUsage, "remaining", "remainingCents", "remaining_cents")
+	return 100.0 * (limit - remaining) / limit, true
+}
+
+func cursorTimeFromMap(m map[string]any, keys ...string) (time.Time, bool) {
+	for _, key := range keys {
+		if m == nil {
+			break
+		}
+		if t, ok := parseCursorTime(m[key]); ok {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseCursorTime(v any) (time.Time, bool) {
+	switch x := v.(type) {
+	case nil:
+		return time.Time{}, false
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return time.Time{}, false
+		}
+		for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05Z07:00"} {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t.UTC(), true
+			}
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil || f <= 0 {
+			return time.Time{}, false
+		}
+		return cursorUnixToTime(f), true
+	case float64:
+		if x <= 0 {
+			return time.Time{}, false
+		}
+		return cursorUnixToTime(x), true
+	case float32:
+		if x <= 0 {
+			return time.Time{}, false
+		}
+		return cursorUnixToTime(float64(x)), true
+	case int:
+		if x <= 0 {
+			return time.Time{}, false
+		}
+		return cursorUnixToTime(float64(x)), true
+	case int64:
+		if x <= 0 {
+			return time.Time{}, false
+		}
+		return cursorUnixToTime(float64(x)), true
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil || f <= 0 {
+			return time.Time{}, false
+		}
+		return cursorUnixToTime(f), true
+	default:
+		return time.Time{}, false
+	}
+}
+
+func cursorUnixToTime(f float64) time.Time {
+	if f >= 1e12 {
+		sec := int64(f / 1000)
+		nsec := int64(math.Mod(f, 1000)) * int64(time.Millisecond)
+		return time.Unix(sec, nsec).UTC()
+	}
+	return time.Unix(int64(f), 0).UTC()
+}
+
+func cursorCycleWindowLabel(start, end time.Time) string {
+	if start.IsZero() || end.IsZero() || !end.After(start) {
+		return "billing-cycle"
+	}
+	days := end.Sub(start).Hours() / 24
+	switch {
+	case days >= 27 && days <= 33:
+		return "~30d"
+	case days >= 6 && days <= 8:
+		return "~7d"
+	case days >= 0.9 && days <= 1.1:
+		return "~1d"
+	case days >= 1:
+		return fmt.Sprintf("~%.0fd", math.Round(days))
+	default:
+		return "billing-cycle"
 	}
 }
 

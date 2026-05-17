@@ -4,10 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"limitdock/internal/quota"
 	"limitdock/internal/settings"
@@ -46,11 +49,14 @@ func TestCursorReaderHappyPath(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodPost {
+			end := time.Now().UTC().Add(12 * 24 * time.Hour)
+			start := end.Add(-30 * 24 * time.Hour)
 			json.NewEncoder(w).Encode(map[string]any{
 				"planUsage": map[string]any{
 					"totalPercentUsed": 10.0,
 				},
-				"billingCycleEnd": 1780272000,
+				"billingCycleStart": fmt.Sprintf("%d", start.UnixMilli()),
+				"billingCycleEnd":   fmt.Sprintf("%d", end.UnixMilli()),
 			})
 			return
 		}
@@ -97,6 +103,68 @@ func TestCursorReaderHappyPath(t *testing.T) {
 	// 90% remaining
 	if cards[0].Main != "90%" {
 		t.Fatalf("expected 90%% remaining, got %q", cards[0].Main)
+	}
+	if cards[0].Bands[0].Reset == "" {
+		t.Fatalf("expected billing cycle reset text, got %#v", cards[0].Bands[0])
+	}
+	if cards[0].Bands[0].Window != "~30d" {
+		t.Fatalf("expected ~30d billing window, got %q", cards[0].Bands[0].Window)
+	}
+}
+
+func TestCursorUsageToSnapshotBillingCycleEndMillisecondsString(t *testing.T) {
+	end := time.Now().UTC().Add(8 * 24 * time.Hour)
+	start := end.Add(-30 * 24 * time.Hour)
+	snap := cursorUsageToSnapshot(map[string]any{
+		"billingCycleStart": fmt.Sprintf("%d", start.UnixMilli()),
+		"billingCycleEnd":   fmt.Sprintf("%d", end.UnixMilli()),
+		"planUsage": map[string]any{
+			"totalPercentUsed": 38.4,
+		},
+	}, "user@example.com")
+	if snap == nil {
+		t.Fatal("expected snapshot")
+	}
+	card := quota.SnapshotToCard("cursor", snap, settings.Defaults())
+	if len(card.Bands) != 1 {
+		t.Fatalf("expected one band, got %#v", card.Bands)
+	}
+	if card.Main != "61.6%" {
+		t.Fatalf("expected 61.6%% remaining, got %q", card.Main)
+	}
+	if card.Bands[0].Reset == "" {
+		t.Fatalf("billing_cycle_end should format reset text, resets=%#v", snap.Resets)
+	}
+}
+
+func TestCursorUsagePlanUsageWinsOverPremiumRequests(t *testing.T) {
+	snap := cursorUsageToSnapshot(map[string]any{
+		"planUsage": map[string]any{
+			"totalPercentUsed": 25.0,
+		},
+		"premium_requests_total":     500,
+		"premium_requests_remaining": 450,
+	}, "user@example.com")
+	metric := snap.Metrics["plan_percent_used"]
+	if metric.Used == nil || *metric.Used != 25.0 {
+		t.Fatalf("planUsage should win, got %#v", metric)
+	}
+}
+
+func TestCursorUsagePlanPercentFromSpendCents(t *testing.T) {
+	snap := cursorUsageToSnapshot(map[string]any{
+		"planUsage": map[string]any{
+			"limit":     40000,
+			"remaining": 16778,
+		},
+	}, "user@example.com")
+	metric := snap.Metrics["plan_percent_used"]
+	if metric.Used == nil {
+		t.Fatalf("expected computed used percent, got %#v", snap.Metrics)
+	}
+	want := 100.0 * (40000 - 16778) / 40000
+	if math.Abs(*metric.Used-want) > 0.01 {
+		t.Fatalf("used=%v want=%v", *metric.Used, want)
 	}
 }
 
