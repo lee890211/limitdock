@@ -20,9 +20,9 @@ The settings dialog exposes log and diagnostic affordances: it can browse LimitD
 `internal/provider` is the single read boundary for quota sources. The UI asks the provider `Aggregator` for one `readmodel.ReadModel`; it does not know which reader produced each snapshot.
 
 - `ClaudeCodeReader` is registered first and reads quota directly from `api.anthropic.com/api/oauth/usage`.
-- `CodexReader` scans `.codex/sessions` JSONL events and is registered second.
-- `GeminiCLIReader` reads quota from `~/.gemini/usage.json` and is registered third.
-- `CursorReader` calls `cursor.com/api/usage` with the token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and is registered fourth.
+- `CodexReader` merges ChatGPT wham usage with `.codex` session/log rate-limit events and is registered second.
+- `GeminiCLIReader` reads `~/.gemini/oauth_creds.json`, calls Code Assist quota APIs, and is registered third.
+- `CursorReader` reads `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, calls Cursor Connect usage on `api2.cursor.sh`, and is registered fourth.
 - `AntigravityReader` checks local language-server status and `%APPDATA%\Antigravity` cache and is registered last.
 - All readers emit the same `readmodel.Snapshot` and `readmodel.Metric` shape; `internal/quota` normalizes all providers through one path.
 - Duplicate snapshot keys keep the first reader's data.
@@ -41,7 +41,8 @@ Throughput, spend, request, token, and cost metrics are filtered before renderin
 
 Codex:
 
-- The native Codex reader scans recent `.codex/sessions` JSONL events for `rate_limits` rows.
+- The native Codex reader merges wham usage with recent `.codex` session/log `rate_limits` events.
+- Wham windows use `limit_window_seconds` when `window_minutes` is absent.
 - Keep `rate_limit_codex_bengalfox_*` rows.
 - Prefer `attributes.rate_limit_codex_bengalfox_name` or matching raw name fields for labels such as `GPT-5.3-Codex-Spark`.
 

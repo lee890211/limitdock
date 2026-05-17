@@ -152,6 +152,24 @@ func TestCodexWhamToSnapshotBothKeyStyles(t *testing.T) {
 	if snap2 == nil || snap2.Metrics["rate_limit_primary"].Used == nil {
 		t.Fatalf("suffix style: expected snapshot, got %#v", snap2)
 	}
+
+	// Wham API uses limit_window_seconds (604800 = 7d), not window_minutes.
+	data3 := map[string]any{
+		"rate_limit": map[string]any{
+			"primary_window": map[string]any{
+				"used_percent":         float64(100),
+				"limit_window_seconds": float64(604800),
+				"reset_at":             float64(1779542577),
+			},
+		},
+	}
+	snap3 := codexWhamToSnapshot(data3)
+	if snap3 == nil {
+		t.Fatal("expected wham snapshot with limit_window_seconds")
+	}
+	if got := snap3.Metrics["rate_limit_primary"].Window; got != "10080m" {
+		t.Fatalf("expected primary window 10080m, got %v", got)
+	}
 }
 
 func TestCodexReaderReturnsEmptyWithoutRateLimits(t *testing.T) {

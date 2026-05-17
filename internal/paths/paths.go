@@ -36,12 +36,11 @@ func ResolveRoot() string {
 }
 
 func New(root string) Paths {
-	engine := filepath.Join(root, "engine")
-	state := filepath.Join(engine, "state")
+	state := filepath.Join(root, "state")
 	logs := filepath.Join(state, "logs")
 	return Paths{
 		Root:     root,
-		Engine:   engine,
+		Engine:   filepath.Join(root, "engine"), // kept for migration; no longer created
 		State:    state,
 		Spool:    filepath.Join(state, "limitdock-spool"),
 		Logs:     logs,

@@ -26,10 +26,10 @@ LimitDock renders only quota-like rows. A provider is absent from the dock if no
 | Provider or agent | Source | LimitDock behavior |
 | --- | --- | --- |
 | Claude Code | LimitDock native reader | Calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Returns real utilization percent, not a time-elapsed estimate. |
-| Codex CLI | LimitDock native reader | Scans recent `.codex/sessions` JSONL events for `rate_limits` rows. |
+| Codex CLI | LimitDock native reader | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` events so 5h and 7d windows stay accurate. |
 | Antigravity | LimitDock native reader | Reads local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. No card is shown if no quota rows are present. |
-| Gemini CLI | LimitDock native reader | Reads `~/.gemini/usage.json`. Model-specific quota rows are preferred; aggregate duplicate rows are suppressed when precise model rows exist. |
-| Cursor | LimitDock native reader | Calls `cursor.com/api/usage` with the token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. Plan-cycle quota from `plan_percent_used`; reset comes from `billing_cycle_end` when present. |
+| Gemini CLI | LimitDock native reader | Uses `~/.gemini/oauth_creds.json` (or related credential files), refreshes when needed, and calls Google Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
+| Cursor | LimitDock native reader | Reads the token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, refreshes when needed, and calls Cursor Connect `GetCurrentPeriodUsage` on `api2.cursor.sh`. Plan-cycle quota from `plan_percent_used`; reset from `billing_cycle_end` when present. |
 
 ## User Guide
 
@@ -113,7 +113,7 @@ Requirements:
 
 ```text
 go test ./...
-go build -ldflags "-H windowsgui" -o engine\bin\LimitDock.exe .\cmd\limitdock
+go build -ldflags "-H windowsgui" -o LimitDock.exe .\cmd\limitdock
 go run .\cmd\limitdock-release -version vYYYYMMDD
 ```
 

@@ -58,33 +58,83 @@ func (r CodexReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 		root = defaultCodexRoot()
 	}
 
-	// Try wham API first (always current data).
-	if snap := r.tryWham(ctx, root); snap != nil && len(snap.Metrics) > 0 {
-		return &readmodel.ReadModel{
-			Snapshots: map[string]*readmodel.Snapshot{
-				snapshotKey("codex", snap.AccountID): snap,
-			},
-		}, nil
-	}
+	whamSnap := r.tryWham(ctx, root)
 
-	// Fall back to local JSONL/sqlite scanning.
+	// Also scan local JSONL/sqlite to fill in any windows the wham API omits
+	// (wham often returns only the primary 5h window; local events carry the 7d secondary).
 	event, err := latestCodexRateLimitEvent(ctx, root)
 	if err != nil {
 		logCodexOnce(r.Log, "read", "Codex fallback reader had trouble reading local rate-limit rows: %v", err)
 	}
+	var localSnap *readmodel.Snapshot
 	if event != nil {
-		snap := codexSnapshot(event.Limits)
-		if snap == nil || len(snap.Metrics) == 0 {
-			return emptyReadModel(), nil
-		}
-		return &readmodel.ReadModel{
-			Snapshots: map[string]*readmodel.Snapshot{
-				snapshotKey("codex", snap.AccountID): snap,
-			},
-		}, nil
+		localSnap = codexSnapshot(event.Limits)
 	}
-	logCodexOnce(r.Log, "missing", "Codex reader skipped: no local rate-limit rows found and wham API unavailable.")
-	return emptyReadModel(), nil
+
+	snap := mergeCodexSnaps(whamSnap, localSnap)
+	if snap == nil || len(snap.Metrics) == 0 {
+		logCodexOnce(r.Log, "missing", "Codex reader skipped: no local rate-limit rows found and wham API unavailable.")
+		return emptyReadModel(), nil
+	}
+	return &readmodel.ReadModel{
+		Snapshots: map[string]*readmodel.Snapshot{
+			snapshotKey("codex", snap.AccountID): snap,
+		},
+	}, nil
+}
+
+// mergeCodexSnaps combines two Codex snapshots. primary wins for any metric key
+// present in both; secondary fills in keys that primary lacks.
+func mergeCodexSnaps(primary, secondary *readmodel.Snapshot) *readmodel.Snapshot {
+	if primary == nil || len(primary.Metrics) == 0 {
+		return secondary
+	}
+	if secondary == nil || len(secondary.Metrics) == 0 {
+		return primary
+	}
+	merged := &readmodel.Snapshot{
+		ProviderID: primary.ProviderID,
+		AccountID:  primary.AccountID,
+		Status:     primary.Status,
+		Metrics:    make(map[string]readmodel.Metric, len(primary.Metrics)+len(secondary.Metrics)),
+		Resets:     map[string]any{},
+		Raw:        primary.Raw,
+		Attributes: primary.Attributes,
+	}
+	for k, v := range secondary.Metrics {
+		merged.Metrics[k] = v
+	}
+	for k, v := range primary.Metrics {
+		if existing, ok := merged.Metrics[k]; ok {
+			merged.Metrics[k] = preferCodexMetric(existing, v)
+			continue
+		}
+		merged.Metrics[k] = v
+	}
+	for k, v := range secondary.Resets {
+		merged.Resets[k] = v
+	}
+	for k, v := range primary.Resets {
+		merged.Resets[k] = v
+	}
+	return merged
+}
+
+func preferCodexMetric(existing, incoming readmodel.Metric) readmodel.Metric {
+	ew := strings.TrimSpace(readmodel.String(existing.Window))
+	iw := strings.TrimSpace(readmodel.String(incoming.Window))
+	switch {
+	case ew == "" && iw != "":
+		return incoming
+	case ew != "" && iw == "":
+		return existing
+	case incoming.Used != nil && existing.Used == nil:
+		return incoming
+	case existing.Used != nil && incoming.Used == nil:
+		return existing
+	default:
+		return incoming
+	}
 }
 
 func (r CodexReader) tryWham(ctx context.Context, root string) *readmodel.Snapshot {
@@ -534,6 +584,13 @@ func codexRateLimitNameAttr(limitID string) string {
 func codexRateLimitWindow(bucket map[string]any) any {
 	if window := firstString(bucket, "window", "period"); window != "" {
 		return window
+	}
+	if secs, ok := firstNumber(bucket, "limit_window_seconds", "window_seconds", "limitWindowSeconds"); ok && secs > 0 {
+		mins := secs / 60
+		if mins == float64(int64(mins)) {
+			return strconv.FormatInt(int64(mins), 10) + "m"
+		}
+		return fmt.Sprintf("%.1fm", mins)
 	}
 	mins, ok := firstNumber(bucket, "window_minutes", "windowMinutes")
 	if !ok || mins <= 0 {

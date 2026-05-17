@@ -15,8 +15,10 @@ LimitDock-<version>/
   settings.example.json
   assets/icons/*.png
   docs/images/*.png
-  engine/state/
+  state/
 ```
+
+Runtime logs and PID files are created under `state/` beside `LimitDock.exe` on first run.
 
 Do not ship `settings.json`, databases, WAL files, PID files, logs, or Go caches.
 
@@ -28,7 +30,7 @@ Run checks first:
 
 ```text
 go test ./...
-go build -ldflags "-H windowsgui" -o engine\bin\LimitDock.exe .\cmd\limitdock
+go build -ldflags "-H windowsgui" -o LimitDock.exe .\cmd\limitdock
 ```
 
 Prepare a release folder and archive:

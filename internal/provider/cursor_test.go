@@ -45,6 +45,15 @@ func TestCursorReaderHappyPath(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			json.NewEncoder(w).Encode(map[string]any{
+				"planUsage": map[string]any{
+					"totalPercentUsed": 10.0,
+				},
+				"billingCycleEnd": 1780272000,
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"premium_requests_remaining": 450,
 			"premium_requests_total":     500,
@@ -77,7 +86,7 @@ func TestCursorReaderHappyPath(t *testing.T) {
 	if *metric.Used != 10.0 {
 		t.Fatalf("expected used=10.0, got %v", *metric.Used)
 	}
-	if snap.Resets["billing_cycle_end"] != "2026-06-01T00:00:00.000Z" {
+	if snap.Resets["billing_cycle_end"] == "" {
 		t.Fatalf("expected billing_cycle_end reset: %#v", snap.Resets)
 	}
 

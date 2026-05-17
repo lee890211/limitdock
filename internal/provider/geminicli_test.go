@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,6 +48,10 @@ func TestGeminiCLIReaderHappyPathWithArrayQuotas(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "loadCodeAssist") {
+			json.NewEncoder(w).Encode(map[string]any{"cloudaicompanionProject": "gen-lang-client-test"})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"email": "user@gmail.com",
 			"quotas": []any{
@@ -91,6 +96,10 @@ func TestGeminiCLIReaderHappyPathWithArrayQuotas(t *testing.T) {
 func TestGeminiCLIReaderHappyPathWithFlatQuotas(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "loadCodeAssist") {
+			json.NewEncoder(w).Encode(map[string]any{})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"quota_flash": 0.75,
 			"quota_pro":   0.50,

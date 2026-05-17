@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,11 +17,13 @@ import (
 )
 
 const (
-	geminiCLITimeout = 8 * time.Second
-	geminiQuotaURL   = "https://aistudio.google.com/api/v1alpha/quota"
+	geminiCLITimeout        = 8 * time.Second
+	geminiLoadCodeAssistURL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	geminiRetrieveQuotaURL  = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
+	geminiProjectsURL       = "https://cloudresourcemanager.googleapis.com/v1/projects"
 	// Public credentials embedded in the Gemini CLI binary (google/gemini-cli).
 	// Split to avoid GitHub secret-scanning false positives on these known-public strings.
-	geminiCLIClientID     = "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur" + ".apps.googleusercontent.com"
+	geminiCLIClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j" + ".apps.googleusercontent.com"
 	geminiCLIClientSecret = "GOCSPX" + "-4uHgMPm-1o7Sk-geV6Cu5clXFsxl"
 )
 
@@ -135,6 +138,7 @@ func readGeminiAccessToken(path string) (string, error) {
 	}
 	if expired {
 		if refreshed, err := refreshGeminiToken(creds); err == nil {
+			_ = persistGeminiAccessToken(path, creds, refreshed)
 			return refreshed, nil
 		}
 		return "", fmt.Errorf("access token expired at %s", expiredAt.Format(time.RFC3339))
@@ -198,19 +202,45 @@ func (r GeminiCLIReader) fetchQuota(ctx context.Context, token string) (map[stri
 	ctx, cancel := context.WithTimeout(ctx, geminiCLITimeout)
 	defer cancel()
 
-	base := strings.TrimRight(r.BaseURL, "/")
-	if base == "" {
-		base = "https://aistudio.google.com"
+	loadURL := geminiLoadCodeAssistURL
+	quotaURL := geminiRetrieveQuotaURL
+	if base := strings.TrimRight(r.BaseURL, "/"); base != "" {
+		loadURL = base + "/v1internal:loadCodeAssist"
+		quotaURL = base + "/v1internal:retrieveUserQuota"
 	}
-	url := base + "/api/v1alpha/quota"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	loadBody := map[string]any{
+		"metadata": map[string]any{
+			"ideType":     "IDE_UNSPECIFIED",
+			"platform":    "PLATFORM_UNSPECIFIED",
+			"pluginType":  "GEMINI",
+			"duetProject": "default",
+		},
+	}
+	loadData, err := geminiPostJSON(ctx, loadURL, token, loadBody)
+	if err != nil {
+		return nil, fmt.Errorf("loadCodeAssist: %w", err)
+	}
+	projectID := discoverGeminiProjectID(token, loadData)
+	quotaBody := map[string]any{}
+	if projectID != "" {
+		quotaBody["project"] = projectID
+	}
+	return geminiPostJSON(ctx, quotaURL, token, quotaBody)
+}
+
+func geminiPostJSON(ctx context.Context, url, token string, body map[string]any) (map[string]any, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
-
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -224,6 +254,79 @@ func (r GeminiCLIReader) fetchQuota(ctx context.Context, token string) (map[stri
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	return out, nil
+}
+
+func discoverGeminiProjectID(token string, loadData map[string]any) string {
+	if id := readFirstStringDeep(loadData, "cloudaicompanionProject", "cloudAiCompanionProject", "project"); id != "" {
+		return id
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), geminiCLITimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, geminiProjectsURL, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode >= 300 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return ""
+	}
+	defer resp.Body.Close()
+	var projects struct {
+		Projects []struct {
+			ProjectID string            `json:"projectId"`
+			Labels    map[string]string `json:"labels"`
+		} `json:"projects"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&projects); err != nil {
+		return ""
+	}
+	for _, p := range projects.Projects {
+		if strings.HasPrefix(p.ProjectID, "gen-lang-client") {
+			return p.ProjectID
+		}
+		if p.Labels["generative-language"] != "" {
+			return p.ProjectID
+		}
+	}
+	return ""
+}
+
+func readFirstStringDeep(value any, keys ...string) string {
+	switch v := value.(type) {
+	case map[string]any:
+		for _, key := range keys {
+			if s := firstString(v, key); s != "" {
+				return s
+			}
+		}
+		for _, child := range v {
+			if s := readFirstStringDeep(child, keys...); s != "" {
+				return s
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if s := readFirstStringDeep(child, keys...); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func persistGeminiAccessToken(path string, creds geminiCredentials, accessToken string) error {
+	creds.AccessToken = accessToken
+	creds.ExpiryDate = time.Now().Add(55 * time.Minute).UnixMilli()
+	b, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
 }
 
 // geminiQuotaToSnapshot converts an AI Studio quota API response to a Snapshot.
@@ -248,6 +351,24 @@ func geminiQuotaToSnapshot(data map[string]any) *readmodel.Snapshot {
 	}
 	metrics := map[string]readmodel.Metric{}
 	resets := map[string]any{}
+
+	collectGeminiQuotaBuckets(data, func(modelName string, remaining float64, reset string) {
+		if modelName == "" {
+			return
+		}
+		pct := normalizeRemainingPercent(remaining)
+		key := "quota_model_" + slug(geminiModelPoolLabel(modelName))
+		if _, exists := metrics[key]; exists {
+			return
+		}
+		metrics[key] = readmodel.Metric{
+			Remaining: floatPtr(pct),
+			Unit:      "%",
+		}
+		if reset != "" {
+			resets[key+"_reset"] = reset
+		}
+	})
 
 	// Try array of per-model quota objects
 	if quotas, ok := data["quotas"].([]any); ok {
@@ -333,6 +454,24 @@ func geminiQuotaToSnapshot(data map[string]any) *readmodel.Snapshot {
 		Metrics:    metrics,
 		Resets:     resets,
 		Raw:        map[string]any{"source": "gemini-cli-api"},
+	}
+}
+
+func collectGeminiQuotaBuckets(value any, emit func(modelName string, remaining float64, reset string)) {
+	switch v := value.(type) {
+	case []any:
+		for _, child := range v {
+			collectGeminiQuotaBuckets(child, emit)
+		}
+	case map[string]any:
+		if remaining, ok := firstNumber(v, "remainingFraction", "remaining_fraction", "remaining"); ok {
+			modelName := firstString(v, "modelId", "model_id", "model", "name")
+			reset := firstString(v, "resetTime", "reset_time", "resetsAt", "resets_at")
+			emit(modelName, remaining, reset)
+		}
+		for _, child := range v {
+			collectGeminiQuotaBuckets(child, emit)
+		}
 	}
 }
 

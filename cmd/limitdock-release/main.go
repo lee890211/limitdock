@@ -32,7 +32,6 @@ func main() {
 		releaseDir,
 		filepath.Join(releaseDir, "assets"),
 		filepath.Join(releaseDir, "docs", "images"),
-		filepath.Join(releaseDir, "engine", "state"),
 	} {
 		must(os.MkdirAll(dir, 0o755))
 	}
@@ -181,7 +180,7 @@ func isForbiddenReleaseEntry(rel string) bool {
 	if path.Base(rel) == "settings.json" {
 		return true
 	}
-	return strings.HasPrefix(rel, "engine/state/")
+	return strings.HasPrefix(rel, "state/")
 }
 
 func must(err error) {

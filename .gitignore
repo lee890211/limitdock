@@ -1,18 +1,17 @@
 # Runtime state and logs
+state/
 engine/state/
 
-# Downloaded or locally built engine artifacts
-engine/bin/
-engine/downloads/
+# Build cache (moved from engine/ to repo root)
+.gocache/
 engine/.gocache/
 engine/.gomodcache/
 
 # Release artifacts
 dist/
 release/
-
-# Accidental upstream OpenUsage.sh source checkout
-engine/openusage/
+LimitDock.exe
+limitdock.exe
 
 # Per-user settings
 settings.json

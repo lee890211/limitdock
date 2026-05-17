@@ -114,9 +114,9 @@ LimitDock renders only quota-like rows. A provider is absent from the dock if no
 | Provider or agent | Source | Notes |
 | --- | --- | --- |
 | Claude Code | LimitDock native reader | Calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Returns real utilization percent, not a time-elapsed estimate. |
-| Codex CLI | LimitDock native reader | Scans recent `.codex/sessions` JSONL events for `rate_limits` rows. |
-| Gemini CLI | LimitDock native reader | Reads `~/.gemini/usage.json`. Model-specific quota rows are preferred; aggregate duplicate rows are suppressed when precise model rows exist. |
-| Cursor | LimitDock native reader | Calls `cursor.com/api/usage` with the token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb`. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
+| Codex CLI | LimitDock native reader | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` rows. |
+| Gemini CLI | LimitDock native reader | Uses `~/.gemini/oauth_creds.json`, refreshes when needed, and calls Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
+| Cursor | LimitDock native reader | Uses `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, refreshes when needed, and calls Cursor Connect `GetCurrentPeriodUsage`. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
 | Antigravity | LimitDock native reader | Reads local Antigravity language-server status or common `%APPDATA%\Antigravity` cache data. No card is shown if no quota rows are present. |
 
 Codex:
