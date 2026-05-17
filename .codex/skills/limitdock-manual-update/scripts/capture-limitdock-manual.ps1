@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:SettingsTemplate = $null
+$script:CaptureLogMarker = 0
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
@@ -95,7 +96,42 @@ function Restore-SettingsTemplate {
   Write-Host "Restored original settings.json in $ReleaseDir"
 }
 
+function Get-CaptureLogPath {
+  Join-Path $ReleaseDir "state\logs\limitdock.log"
+}
+
+function Mark-CaptureLog {
+  $path = Get-CaptureLogPath
+  if (!(Test-Path $path)) {
+    $script:CaptureLogMarker = 0
+    return
+  }
+  $script:CaptureLogMarker = @(Get-Content -LiteralPath $path).Count
+}
+
+function Get-RecentCaptureLogLines {
+  $path = Get-CaptureLogPath
+  if (!(Test-Path $path)) { return @() }
+  $lines = @(Get-Content -LiteralPath $path)
+  if ($script:CaptureLogMarker -ge $lines.Count) { return @() }
+  return $lines[$script:CaptureLogMarker..($lines.Count - 1)]
+}
+
+function Wait-RecentLogMatch([string]$Pattern, [string]$Label) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    $recent = Get-RecentCaptureLogLines
+    if ($recent -match $Pattern) {
+      Write-Host "Log ready: $Label"
+      return
+    }
+    Start-Sleep -Seconds 2
+  }
+  throw "Timed out waiting for $Label in $(Get-CaptureLogPath) (since launch)."
+}
+
 function Start-LimitDock {
+  Mark-CaptureLog
   $exe = Join-Path $ReleaseDir "LimitDock.exe"
   if (!(Test-Path $exe)) { throw "LimitDock.exe not found: $exe" }
   Start-Process -FilePath $exe -WorkingDirectory $ReleaseDir | Out-Null
@@ -103,9 +139,8 @@ function Start-LimitDock {
 }
 
 function Wait-ReadModelReady {
-  $script = Join-Path $PSScriptRoot "readmodel-ready.go"
-  & go run $script -release-dir $ReleaseDir -timeout ("{0}s" -f $TimeoutSeconds) -min-hits 1
-  if ($LASTEXITCODE -ne 0) { throw "LimitDock native readers did not log quota rows yet." }
+  Wait-RecentLogMatch 'reader captured' 'native quota readers'
+  Wait-RecentLogMatch 'Antigravity reader captured' 'Antigravity quota rows'
 }
 
 function Get-LimitDockWindowRect {
