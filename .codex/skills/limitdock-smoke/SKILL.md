@@ -44,7 +44,7 @@ Edges:
 - For `left/overlay/autoHide=true`, use a Windows hit-test (`WindowFromPoint` and `GetAncestor`) before clicking the gear, pin, or Updated areas. The root window under the cursor must belong to `LimitDock.exe`; otherwise the run fails even if the bar is visible on screen.
 - Settings opens in front.
 - Settings action buttons are left-aligned, not centered.
-- Settings includes OpenUsage/log diagnostics controls: OpenUsage settings, OpenUsage folder, logs folder, LimitDock log, and copy diagnostics.
+- Settings includes log/diagnostic controls: browse LimitDock logs, open `limitdock.log`, and copy diagnostic paths.
 - The pin/unpin button toggles `autoHide`.
 - In left overlay, explicitly test both directions: pinned -> click pin -> hidden/unpinned, then edge hover -> revealed -> click pin -> pinned/visible.
 - Tray `Hide Status Bar` restores the work area and pauses reveal.
@@ -58,9 +58,9 @@ Edges:
 
 Inspect the local machine for installed or running agents and verify expected source behavior:
 
-- OpenUsage-supported providers should come through `internal/connector/openusage`.
-- Codex should use OpenUsage first; the custom Codex reader is only a fallback when OpenUsage has no Codex quota rows.
-- Antigravity is custom quota-only. It should appear only when the running language server or local cache exposes quota-like rows.
+- Claude Code, Codex, Gemini CLI, Cursor, and Antigravity should come through native readers in `internal/provider`.
+- Registration order is ClaudeCode → Codex → GeminiCLI → Cursor → Antigravity; duplicate snapshot keys keep the first reader.
+- Antigravity appears only when the running language server or local cache exposes quota-like rows.
 - If an installed agent is absent from the dock, inspect whether the source emitted quota-like rows before treating it as a UI bug.
 
 ## Reporting

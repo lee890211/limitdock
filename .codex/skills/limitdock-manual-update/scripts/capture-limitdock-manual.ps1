@@ -62,10 +62,9 @@ function Start-LimitDock {
 }
 
 function Wait-ReadModelReady {
-  $script = Join-Path (Split-Path $PSScriptRoot -Parent) "scripts\readmodel-ready.go"
-  $socket = Join-Path $env:USERPROFILE ".local\state\openusage\telemetry.sock"
-  & go run $script -socket $socket -timeout ("{0}s" -f $TimeoutSeconds)
-  if ($LASTEXITCODE -ne 0) { throw "OpenUsage read-model did not become ready." }
+  $script = Join-Path $PSScriptRoot "readmodel-ready.go"
+  & go run $script -release-dir $ReleaseDir -timeout ("{0}s" -f $TimeoutSeconds) -min-hits 1
+  if ($LASTEXITCODE -ne 0) { throw "LimitDock native readers did not log quota rows yet." }
 }
 
 function Get-LimitDockWindowRect {
@@ -190,7 +189,7 @@ function Capture-State([string]$Name, [string]$Theme, [string]$Edge, [string]$Mo
   Write-Settings -Theme $Theme -Edge $Edge -Mode $Mode -AutoHide $AutoHide -Opacity $Opacity
   Start-LimitDock
   Wait-ReadModelReady
-  Write-Host "OpenUsage read-model is ready. Waiting $UiSettleSeconds seconds for LimitDock UI refresh..."
+  Write-Host "Native quota readers are ready. Waiting $UiSettleSeconds seconds for LimitDock UI refresh..."
   Start-Sleep -Seconds $UiSettleSeconds
   if ($AutoHide -and ($Edge -eq "left" -or $Edge -eq "right")) {
     [ManualCaptureNative]::SetCursorPos(1, 300) | Out-Null

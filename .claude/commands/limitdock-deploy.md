@@ -20,15 +20,15 @@ If a tag for today already exists (local or remote), overwrite it — never appe
 
 ## Build
 
-Always bundle the OpenUsage binary. Omitting it produces a 12 MB zip instead of the correct ~18 MB and forces an internet download on first run.
+LimitDock is self-contained. Do not bundle OpenUsage.
 
 ```powershell
-go run ./cmd/limitdock-release -version $tag -include-openusage-binary
+go run ./cmd/limitdock-release -version $tag
 ```
 
-This runs all tests, builds with `-H windowsgui`, copies assets, and writes `dist/LimitDock-$tag.zip`.
+This runs all tests, builds with `-H windowsgui`, copies assets and docs, and writes `dist/LimitDock-$tag.zip`.
 
-Verify the zip is in the 17–20 MB range before continuing. If it is under 15 MB the OpenUsage binary is missing — stop and diagnose.
+Expect the zip to be roughly 11–14 MB. It must include `LimitDock.exe`, `LimitDock.exe.manifest`, and `assets/icons/`. If the zip is only a few hundred kilobytes, the build failed.
 
 ## Git tag
 
@@ -65,24 +65,34 @@ gh release upload $tag "dist/LimitDock-$tag.zip" --clobber
 
 ## Local install
 
-The install directory is `E:\LimitDock-$tag`. If it does not exist, extract the zip to create it. Then overwrite the executable:
+The install directory is `E:\LimitDock-$tag`. Prefer a full folder install so icons, manifest, and docs stay in sync.
 
 ```powershell
 $installDir = "E:\LimitDock-$tag"
+$src = "dist\LimitDock-$tag"
 if (-not (Test-Path $installDir)) {
-    Expand-Archive "dist/LimitDock-$tag.zip" -DestinationPath $installDir -Force
+    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+    Copy-Item -Path "$src\*" -Destination $installDir -Recurse -Force
 } else {
-    Copy-Item -Force "dist/LimitDock-$tag/LimitDock.exe" "$installDir/LimitDock.exe"
+    $stateBackup = Join-Path $env:TEMP "limitdock-state-backup"
+    if (Test-Path (Join-Path $installDir "state")) {
+        Copy-Item -Path (Join-Path $installDir "state") -Destination $stateBackup -Recurse -Force
+    }
+    Copy-Item -Path "$src\*" -Destination $installDir -Recurse -Force
+    if (Test-Path $stateBackup) {
+        Copy-Item -Path $stateBackup -Destination (Join-Path $installDir "state") -Recurse -Force
+        Remove-Item -Path $stateBackup -Recurse -Force
+    }
 }
 ```
 
-Note: the build tool places the unpacked files under `dist/LimitDock-$tag/` before zipping, so that path is the source for the copy step.
+Do not copy only `LimitDock.exe` into an older folder; that leaves out icons and the manifest.
 
 ## Checklist
 
 After all steps, confirm:
 
-- [ ] `dist/LimitDock-$tag.zip` exists and is 17–20 MB
+- [ ] `dist/LimitDock-$tag.zip` exists (~11–14 MB) and contains `assets/icons/`
 - [ ] Annotated tag `$tag` pushed to origin
 - [ ] GitHub release at `https://github.com/lee890211/limitdock/releases/tag/$tag` has the zip asset
-- [ ] `E:\LimitDock-$tag\LimitDock.exe` is updated
+- [ ] `E:\LimitDock-$tag\` has `LimitDock.exe`, manifest, and `assets/icons/`

@@ -1,112 +1,61 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
+	"bufio"
 	"flag"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-type readModel struct {
-	Snapshots map[string]snapshot `json:"snapshots"`
-}
-
-type snapshot struct {
-	ProviderID string            `json:"provider_id"`
-	Metrics    map[string]metric `json:"metrics"`
-}
-
-type metric struct {
-	Unit string `json:"unit"`
-}
-
 func main() {
-	socket := flag.String("socket", "", "OpenUsage Unix socket path")
+	logPath := flag.String("log", "", "LimitDock log file (default: <release>/state/logs/limitdock.log)")
+	releaseDir := flag.String("release-dir", "", "release folder used when -log is empty")
+	minHits := flag.Int("min-hits", 1, "minimum successful native reader log lines required")
 	timeout := flag.Duration("timeout", 90*time.Second, "maximum wait time")
 	flag.Parse()
-	if strings.TrimSpace(*socket) == "" {
-		home, _ := os.UserHomeDir()
-		*socket = home + `\.local\state\openusage\telemetry.sock`
+
+	path := strings.TrimSpace(*logPath)
+	if path == "" {
+		root := strings.TrimSpace(*releaseDir)
+		if root == "" {
+			fmt.Fprintln(os.Stderr, "limitdock not ready: pass -log or -release-dir")
+			os.Exit(1)
+		}
+		path = filepath.Join(root, "state", "logs", "limitdock.log")
 	}
+
 	deadline := time.Now().Add(*timeout)
-	var lastErr error
 	for time.Now().Before(deadline) {
-		model, err := readOnce(*socket)
-		if err == nil && quotaRows(model) > 0 {
-			fmt.Printf("ready snapshots=%d quota_rows=%d\n", len(model.Snapshots), quotaRows(model))
+		hits, err := countReaderSuccess(path)
+		if err == nil && hits >= *minHits {
+			fmt.Printf("ready log=%s reader_success_lines=%d\n", path, hits)
 			return
 		}
-		lastErr = err
 		time.Sleep(2 * time.Second)
 	}
-	if lastErr != nil {
-		fmt.Fprintf(os.Stderr, "OpenUsage read-model not ready: %v\n", lastErr)
-	} else {
-		fmt.Fprintln(os.Stderr, "OpenUsage read-model not ready: no quota rows")
-	}
+	fmt.Fprintf(os.Stderr, "limitdock not ready: need >=%d native reader success lines in %s\n", *minHits, path)
 	os.Exit(1)
 }
 
-func readOnce(socket string) (*readModel, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	dialer := &net.Dialer{Timeout: 2 * time.Second}
-	client := &http.Client{
-		Timeout: 8 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return dialer.DialContext(ctx, "unix", socket)
-			},
-			DisableCompression: true,
-			DisableKeepAlives:  true,
-		},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/v1/read-model", bytes.NewReader([]byte(`{}`)))
+func countReaderSuccess(path string) (int, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("status %s: %s", resp.Status, string(raw))
-	}
-	var model readModel
-	if err := json.Unmarshal(raw, &model); err != nil {
-		return nil, err
-	}
-	return &model, nil
-}
+	defer f.Close()
 
-func quotaRows(model *readModel) int {
-	if model == nil {
-		return 0
-	}
-	count := 0
-	for _, snap := range model.Snapshots {
-		for key, metric := range snap.Metrics {
-			k := strings.ToLower(strings.TrimSpace(key))
-			if metric.Unit == "%" || k == "quota" || strings.HasPrefix(k, "quota_") ||
-				strings.HasPrefix(k, "rate_limit_") || k == "usage_five_hour" ||
-				k == "usage_seven_day" || k == "plan_percent_used" ||
-				strings.HasSuffix(k, "_quota") {
-				count++
-			}
+	hits := 0
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.ToLower(scanner.Text())
+		if strings.Contains(line, "reader captured") ||
+			strings.Contains(line, "reader captured quota") ||
+			strings.Contains(line, "reader captured local quota") {
+			hits++
 		}
 	}
-	return count
+	return hits, scanner.Err()
 }

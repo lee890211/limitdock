@@ -12,8 +12,8 @@ Use this command to refresh LimitDock documentation screenshots and richer visua
 - Never include the Claude Code chat, browser, terminal, desktop, taskbar, notifications, email, file explorer contents, or other private windows.
 - For opacity captures, place a neutral solid backdrop behind LimitDock before capturing. Do not capture real desktop content through transparency.
 - If any non-LimitDock content appears in a candidate image, discard it or blur/mosaic it before adding it to `docs/images`.
-- Wait until OpenUsage has loaded and at least one quota-like read-model row is available before capturing provider cards.
-- Read-model readiness alone is not enough. Also wait for the LimitDock UI to refresh after readiness; use at least `-UiSettleSeconds 60` for final manual assets.
+- Wait until native provider readers have logged at least one successful quota fetch before capturing provider cards.
+- Reader readiness alone is not enough. Also wait for the LimitDock UI to refresh afterward; use at least `-UiSettleSeconds 60` for final manual assets.
 - Inspect every generated image before updating docs.
 
 ## Expected Assets
@@ -49,7 +49,7 @@ go run .\cmd\limitdock-release -version vYYYYMMDD-manual
   -UiSettleSeconds 60
 ```
 
-3. Verify the generated images visually. Reject any image that includes private content or still shows `Waiting OpenUsage`.
+3. Verify the generated images visually. Reject any image that includes private content or still shows an empty/waiting dock with no provider cards.
 
 4. Update `README.md` and `docs/USER_MANUAL.md` so the guide shows:
 
@@ -59,7 +59,7 @@ go run .\cmd\limitdock-release -version vYYYYMMDD-manual
 - slide-in and slide-out behavior
 - row picker
 
-5. Keep captions short and task-focused. Explain that screenshots are captured after OpenUsage read-model readiness, so provider cards reflect real quota rows.
+5. Keep captions short and task-focused. Explain that screenshots are captured after native readers return quota rows, so provider cards reflect real data.
 
 6. Run checks:
 
@@ -70,7 +70,7 @@ git diff --check
 
 ## Helper Details
 
-- `.codex/skills/limitdock-manual-update/scripts/readmodel-ready.go` polls the OpenUsage Unix socket and succeeds only when quota-like rows exist.
-- `.codex/skills/limitdock-manual-update/scripts/capture-limitdock-manual.ps1` writes temporary release-local `settings.json` states, launches the release EXE, waits for OpenUsage readiness, waits for the UI to settle, captures only the LimitDock window/edge region, and creates `manual-slide-in-out.gif` with the bundled Go helper when `go` is available.
+- `.codex/skills/limitdock-manual-update/scripts/readmodel-ready.go` tails `state/logs/limitdock.log` and succeeds when native reader success lines appear.
+- `.codex/skills/limitdock-manual-update/scripts/capture-limitdock-manual.ps1` writes temporary release-local `settings.json` states, launches the release EXE, waits for native reader readiness, waits for the UI to settle, captures only the LimitDock window/edge region, and creates `manual-slide-in-out.gif` with the bundled Go helper when `go` is available.
 
-If the helper cannot prove OpenUsage readiness, do not capture final manual assets. Fix OpenUsage first or document the blocker.
+If the helper cannot prove reader readiness, do not capture final manual assets. Fix credentials or reader errors first, or document the blocker.
