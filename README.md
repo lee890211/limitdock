@@ -21,7 +21,7 @@ LimitDock reads quota directly from each tool's local credentials, session files
 
 ## Provider Support
 
-LimitDock renders only quota-like rows. A provider is absent from the dock only if it has never been configured locally; once local credentials exist, the card stays visible even if it needs sign-in (`Sign in`) or the latest fetch failed and last-known values are shown instead (`stale`).
+LimitDock renders only quota-like rows. A provider with no local credential evidence stays absent. Once local credentials have been discovered, the card can stay visible even without quota bands: `Sign in` when those credentials exist but are unusable, or `stale` when the latest fetch failed and last-known values are shown.
 
 | Provider or agent | Notes |
 | --- | --- |
@@ -86,7 +86,7 @@ Right-click the tray icon:
 
 ### Connect Claude
 
-If Claude has no usable local credentials, its card shows `Sign in`. Open the Connect flow from the tray's `Connect Claude...` item (visible only while Claude needs sign-in), from `Settings → Providers` (always available), or by double-clicking the Claude card. Click through to open the Claude sign-in page in your browser, approve LimitDock, then copy the code the page shows — LimitDock auto-fills when it looks like a sign-in code, or use the dialog's `Paste` button / Ctrl+V. LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`, so this works even without the `claude` CLI installed. Disconnect from the same `Settings → Providers` panel.
+If Claude credentials exist but are unusable, its card shows `Sign in`. If Claude was never configured locally, no Claude card appears — use `Settings → Providers → Connect...` for first-time sign-in. Open the Connect flow from the tray's `Connect Claude...` item (visible only while the Claude card is `Sign in`), from `Settings → Providers` (always available), or by double-clicking the Claude card. Click through to open the Claude sign-in page in your browser, approve LimitDock, then copy the code the page shows — LimitDock auto-fills when it looks like a sign-in code, or use the dialog's `Paste` button / Ctrl+V. LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`, so this works even without the `claude` CLI installed. Disconnect from the same `Settings → Providers` panel.
 
 ### Docking
 

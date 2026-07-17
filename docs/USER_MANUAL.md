@@ -111,11 +111,11 @@ The settings window also includes a `Providers` section listing each provider's 
 
 ## Provider Behavior
 
-LimitDock renders only quota-like rows. A provider is absent from the dock if no quota, rate-limit, credit, or reset row is available.
+LimitDock renders only quota-like rows by default. A provider with **no local credential evidence at all** stays absent (silent). Once local credentials have been discovered, the card can stay visible even without quota bands: `Sign in` when those credentials exist but are unusable, or `stale` when the latest fetch failed and last-known values are shown.
 
 | Provider or agent | Notes |
 | --- | --- |
-| Claude Code | OAuth usage from `~/.claude/.credentials.json`, `CLAUDE_CODE_OAUTH_TOKEN`, or a LimitDock Connect sign-in (see below). Expired CLI tokens are refreshed and written back automatically; if none are usable, the card shows `Sign in`. Real utilization percent, not a time-elapsed estimate. |
+| Claude Code | OAuth usage from `~/.claude/.credentials.json`, `CLAUDE_CODE_OAUTH_TOKEN`, or a LimitDock Connect sign-in (see below). Expired CLI tokens are refreshed and written back automatically. If credentials exist but cannot be used (expired refresh, rejected token), the card shows `Sign in`. If Claude was never configured locally, no card is shown. Real utilization percent, not a time-elapsed estimate. |
 | Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` rows. Expired tokens are refreshed and written back to `auth.json` automatically. |
 | Gemini CLI | `~/.gemini/oauth_creds.json` and Code Assist `retrieveUserQuota`. Expired tokens are refreshed and written back automatically. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
 | Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and Connect `GetCurrentPeriodUsage`. Refreshed tokens are cached in memory across polls. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
@@ -148,15 +148,15 @@ Antigravity:
 
 ## Connect a Provider (Claude)
 
-If Claude has no usable local credentials — no CLI login, or a token that failed to refresh — its card shows `Sign in`. Connect Claude directly from LimitDock:
+Connect Claude from LimitDock when you want a LimitDock-owned token, or when an existing Claude credential has become unusable:
 
-1. Open the flow from the tray menu's `Connect Claude...` item (visible only while Claude needs sign-in), from `Settings → Providers → Connect...` (always available), or by double-clicking the Claude card while it shows `Sign in`.
+1. Open the flow from the tray menu's `Connect Claude...` item (visible only while the Claude card is `Sign in`), from `Settings → Providers → Connect...` (always available, including first-time setup with no Claude card), or by double-clicking the Claude card while it shows `Sign in`.
 2. Click `1. Open Claude sign-in` to open the Claude sign-in page in your browser and approve LimitDock.
 3. Copy the code the page shows. LimitDock auto-fills the field when the clipboard looks like a sign-in code (`CODE#STATE`). If it does not, click `Paste` (or press Ctrl+V) and then click `Connect`.
 
 LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`; it never modifies `~/.claude/.credentials.json` and works even if the `claude` CLI is not installed. To disconnect, open `Settings → Providers` and click `Disconnect` next to Claude — this removes only the LimitDock-stored token and does not affect a `claude` CLI login.
 
-A card showing `Sign in` means LimitDock could not find usable credentials and needs a fresh sign-in. A card showing `stale` means the latest fetch failed but LimitDock is still showing the last known values.
+A card showing `Sign in` means local Claude credentials exist but are unusable and need a fresh sign-in. If Claude was never configured locally, no Claude card appears — use `Settings → Providers → Connect...` instead. A card showing `stale` means the latest fetch failed but LimitDock is still showing the last known values.
 
 ## Build And Release
 
