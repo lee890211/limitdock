@@ -2,6 +2,7 @@ package quota
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,6 +97,111 @@ func TestHiddenBandsKeepAllBandsForPicker(t *testing.T) {
 	}
 	if len(card.AllBands) != 2 {
 		t.Fatalf("all bands should remain available for picker: %#v", card.AllBands)
+	}
+}
+
+func TestCardsIncludesNeedsAuthCardWithZeroBands(t *testing.T) {
+	model := &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+		"claude-code": {
+			ProviderID: "claude_code",
+			Status:     readmodel.StatusNeedsAuth,
+			Message:    "access token expired",
+			Metrics:    map[string]readmodel.Metric{},
+		},
+	}}
+	cards := Cards(model, settings.Defaults())
+	if len(cards) != 1 {
+		t.Fatalf("needs_auth snapshot should render a card, got %#v", cards)
+	}
+	card := cards[0]
+	if card.Status != readmodel.StatusNeedsAuth || card.Level != "critical" || card.Main != "Sign in" {
+		t.Fatalf("unexpected needs_auth card: %#v", card)
+	}
+	if card.Detail != "sign-in required" {
+		t.Fatalf("unexpected needs_auth detail: %q", card.Detail)
+	}
+	if card.Message != "access token expired" {
+		t.Fatalf("snapshot message should carry through: %q", card.Message)
+	}
+}
+
+func TestCardsIncludesStaleCardAndKeepsBands(t *testing.T) {
+	model := &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+		"claude-code": {
+			ProviderID: "claude_code",
+			Status:     readmodel.StatusStale,
+			Metrics: map[string]readmodel.Metric{
+				"usage_five_hour": metric(t, `{"unit":"%","used":40,"window":"5h"}`),
+			},
+		},
+	}}
+	cards := Cards(model, settings.Defaults())
+	if len(cards) != 1 {
+		t.Fatalf("stale snapshot should render a card, got %#v", cards)
+	}
+	card := cards[0]
+	if card.Main != "60%" || card.Level != "warn" || card.Status != readmodel.StatusStale {
+		t.Fatalf("stale card should keep last-known percent at warn level: %#v", card)
+	}
+	if !strings.HasPrefix(card.Detail, "stale") {
+		t.Fatalf("stale marker should lead detail: %q", card.Detail)
+	}
+}
+
+func TestCardsStaleKeepsCriticalLevelFromThreshold(t *testing.T) {
+	snap := &readmodel.Snapshot{
+		ProviderID: "claude_code",
+		Status:     readmodel.StatusStale,
+		Metrics: map[string]readmodel.Metric{
+			"usage_five_hour": metric(t, `{"unit":"%","used":99,"window":"5h"}`),
+		},
+	}
+	card := SnapshotToCard("claude-code", snap, settings.Defaults())
+	if card.Level != "critical" {
+		t.Fatalf("stale must not downgrade critical: %#v", card)
+	}
+}
+
+func TestCardsErrorStatusRendersErrorCard(t *testing.T) {
+	model := &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+		"claude-code": {
+			ProviderID: "claude_code",
+			Status:     readmodel.StatusError,
+			Message:    "usage API: HTTP 500",
+			Metrics:    map[string]readmodel.Metric{},
+		},
+	}}
+	cards := Cards(model, settings.Defaults())
+	if len(cards) != 1 || cards[0].Main != "Error" || cards[0].Level != "critical" {
+		t.Fatalf("error snapshot should render an error card: %#v", cards)
+	}
+}
+
+func TestCardsExcludesOkZeroBandSnapshotUnchanged(t *testing.T) {
+	model := &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+		"claude-code": {
+			ProviderID: "claude_code",
+			Status:     readmodel.StatusOK,
+			Metrics:    map[string]readmodel.Metric{},
+		},
+	}}
+	if cards := Cards(model, settings.Defaults()); len(cards) != 0 {
+		t.Fatalf("ok snapshot without bands must stay hidden: %#v", cards)
+	}
+}
+
+func TestDisplayQuotaMetricKeyShowsAllCodexRateLimitRows(t *testing.T) {
+	snap := &readmodel.Snapshot{ProviderID: "codex"}
+	for _, key := range []string{
+		"rate_limit_primary",
+		"rate_limit_secondary",
+		"rate_limit_code_review_primary",
+		"rate_limit_gpt_5_3_codex_spark_primary",
+		"rate_limit_bengalfox_secondary",
+	} {
+		if !DisplayQuotaMetricKey(snap, key) {
+			t.Fatalf("codex rate_limit row %q should display", key)
+		}
 	}
 }
 

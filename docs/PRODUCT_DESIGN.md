@@ -5,6 +5,7 @@ LimitDock is a working status bar, not a dashboard. Its purpose is to keep quota
 ## Product Rules
 
 - Show quota only. Do not show spend, token totals, request counts, tool-call rates, or generic activity.
+- Keep needs-auth minimal. A card whose local credentials are unusable shows a minimal `Sign in` state instead of quota bands — the quota-only spirit holds even when a provider needs attention, so the card stays visible rather than hiding.
 - Preserve exhausted rows. A 0 percent model is meaningful and must remain visible unless the user hides it.
 - Prefer model plus window in the row label, with reset countdown in its own column. A row should make it clear what model or plan bucket is being metered and when it resets without repeating the window twice.
 - Keep local state local. `settings.json` is personal and ignored; `settings.example.json` is the shareable default.
@@ -34,6 +35,8 @@ Overlay opacity is a live-preview setting: dragging the slider changes only the 
 ## Refresh Control
 
 The `Updated` panel is both status and action. It keeps a compact vertical label/time layout and a refresh glyph so it is recognizable as clickable. Clicking it forces a refresh immediately instead of waiting for the automatic interval.
+
+Background polling is throttled per provider, independent of this interval: Claude Code fetches no more than every 180 seconds (backing off further on repeated rate limits), and the other four providers no more than every 60 seconds. Clicking `Updated` always forces a real fetch, bypassing whatever throttle or backoff is currently in effect.
 
 ## Overlay Versus Reserved
 

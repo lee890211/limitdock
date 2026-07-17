@@ -76,7 +76,7 @@ Right-click the tray icon:
 
 - `Hide Status Bar`: hides the dock, unregisters reserved appbar space, restores the Windows work area, disables hover reveal, and pauses refresh.
 - `Show Status Bar`: shows the dock again using saved settings.
-- `Settings`: opens LimitDock docking, theme, refresh, startup, threshold, and log/diagnostic controls.
+- `Settings`: opens LimitDock docking, theme, refresh, startup, threshold, provider connection, and log/diagnostic controls.
 - `Exit`: closes LimitDock.
 
 Hide is not persisted. A fresh launch shows the dock again.
@@ -105,6 +105,8 @@ Dock mode, dock edge, theme, overlay opacity, auto-slide, refresh interval, gaug
 
 The settings window includes log and diagnostic controls. Use them to browse LimitDock logs, open `limitdock.log`, or copy diagnostic paths for troubleshooting. Antigravity path settings are intentionally absent because LimitDock auto-detects local Antigravity quota sources.
 
+The settings window also includes a `Providers` section listing each provider's current credential state, with `Connect...`/`Disconnect` for Claude. See [Connect a Provider (Claude)](#connect-a-provider-claude).
+
 `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Clear the checkbox to remove the value. Older `LimitDock.lnk` startup shortcuts are cleaned up when this setting changes.
 
 ## Provider Behavior
@@ -113,33 +115,48 @@ LimitDock renders only quota-like rows. A provider is absent from the dock if no
 
 | Provider or agent | Notes |
 | --- | --- |
-| Claude Code | OAuth usage from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Real utilization percent, not a time-elapsed estimate. |
-| Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` rows. |
-| Gemini CLI | `~/.gemini/oauth_creds.json` and Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
-| Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and Connect `GetCurrentPeriodUsage`. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
-| Antigravity | Local language-server status or common `%APPDATA%\Antigravity` cache data. No card when no quota rows are present. |
+| Claude Code | OAuth usage from `~/.claude/.credentials.json`, `CLAUDE_CODE_OAUTH_TOKEN`, or a LimitDock Connect sign-in (see below). Expired CLI tokens are refreshed and written back automatically; if none are usable, the card shows `Sign in`. Real utilization percent, not a time-elapsed estimate. |
+| Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` rows. Expired tokens are refreshed and written back to `auth.json` automatically. |
+| Gemini CLI | `~/.gemini/oauth_creds.json` and Code Assist `retrieveUserQuota`. Expired tokens are refreshed and written back automatically. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
+| Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and Connect `GetCurrentPeriodUsage`. Refreshed tokens are cached in memory across polls. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
+| Antigravity | Local language-server status first; falls back to a cached `%APPDATA%\Antigravity` quota file only when it is under 45 minutes old, shown as `stale`. No card when neither source has quota rows. |
 
 Codex:
 
 - Shows `rate_limit_*` rows.
 - Keeps Spark/Bengalfox rows and labels them from session event attributes.
+- Refreshes an expired access token automatically and writes it back to `auth.json`, so quota keeps working without the `codex` CLI running.
 
 Gemini CLI:
 
 - Shows model-specific quota rows when available.
 - Suppresses aggregate duplicate rows such as bare `quota`, `quota_flash`, or `quota_pro` when model rows exist.
+- Refreshes an expired access token automatically, so quota keeps working without the `gemini` CLI running.
 
 Cursor:
 
 - Shows only the plan-cycle quota row from `plan_percent_used`.
 - Uses `billing_cycle_end` for reset text when present.
+- Caches a refreshed token in memory so repeated polls do not force a new refresh every cycle.
 
 Antigravity:
 
 - Appears only when LimitDock can read quota-like Antigravity data locally.
 - LimitDock does not show an Antigravity status-only card. It needs percent/reset or prompt-credit quota data.
-- LimitDock tries the running local language-server endpoint and common `%APPDATA%\Antigravity` cache locations automatically.
+- LimitDock tries the running local language-server endpoint first; it falls back to a cached `%APPDATA%\Antigravity` quota file only when that cache is under 45 minutes old, shown with a `stale` marker.
 - There are no Antigravity settings. If no quota data is available, no Antigravity card is rendered.
+
+## Connect a Provider (Claude)
+
+If Claude has no usable local credentials — no CLI login, or a token that failed to refresh — its card shows `Sign in`. Connect Claude directly from LimitDock:
+
+1. Open the flow from the tray menu's `Connect Claude...` item (visible only while Claude needs sign-in), from `Settings → Providers → Connect...` (always available), or by double-clicking the Claude card while it shows `Sign in`.
+2. Click `1. Open Claude sign-in` to open the Claude sign-in page in your browser and approve LimitDock.
+3. Copy the code the page shows. LimitDock auto-fills the field when the clipboard looks like a sign-in code (`CODE#STATE`). If it does not, click `Paste` (or press Ctrl+V) and then click `Connect`.
+
+LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`; it never modifies `~/.claude/.credentials.json` and works even if the `claude` CLI is not installed. To disconnect, open `Settings → Providers` and click `Disconnect` next to Claude — this removes only the LimitDock-stored token and does not affect a `claude` CLI login.
+
+A card showing `Sign in` means LimitDock could not find usable credentials and needs a fresh sign-in. A card showing `stale` means the latest fetch failed but LimitDock is still showing the last known values.
 
 ## Build And Release
 

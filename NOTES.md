@@ -5,11 +5,14 @@ LimitDock is a native Windows dock that shows remaining AI tool quota at a glanc
 Current architecture:
 
 - Read provider data through a single Go provider aggregator (`internal/provider`).
-- Claude Code: native reader calls `api.anthropic.com/api/oauth/usage` with the OAuth token from `~/.claude/.credentials.json` (or `CLAUDE_CODE_OAUTH_TOKEN`). Returns real utilization percent, not a time-elapsed estimate.
-- Codex CLI: native reader merges ChatGPT wham usage with `.codex` session/log `rate_limits` rows.
-- Antigravity: native reader checks local language-server status and `%APPDATA%\Antigravity` cache for quota rows.
-- Gemini CLI: native reader uses `~/.gemini/oauth_creds.json` and Code Assist quota APIs.
-- Cursor: native reader uses `state.vscdb` and Cursor Connect usage on `api2.cursor.sh`.
+- Claude Code: native reader calls `api.anthropic.com/api/oauth/usage` with a token from `CLAUDE_CODE_OAUTH_TOKEN`, LimitDock's own Connect sign-in, or `~/.claude/.credentials.json`; expired tokens are refreshed and written back automatically. Returns real utilization percent, not a time-elapsed estimate.
+- Codex CLI: native reader merges ChatGPT wham usage with `.codex` session/log `rate_limits` rows; refreshes and writes back an expired `auth.json` token automatically.
+- Antigravity: native reader checks the live local language-server status first, falling back to a `%APPDATA%\Antigravity` cache only when it is under 45 minutes old (marked stale).
+- Gemini CLI: native reader uses `~/.gemini/oauth_creds.json` and Code Assist quota APIs; refreshes and writes back an expired token automatically.
+- Cursor: native reader uses `state.vscdb` and Cursor Connect usage on `api2.cursor.sh`; a refreshed token is cached in memory across polls.
+- Connect Claude (tray menu, Settings, or double-clicking a `Sign in` card) lets a user sign in without the `claude` CLI installed; LimitDock stores its own token DPAPI-encrypted under `state\credentials\`.
+- Snapshot status (`ok`/`needs_auth`/`stale`/`error`) drives card presentation; a provider with no local credentials still shows nothing.
+- Background polling is throttled per provider (Claude Code 180s plus backoff, others 60s); a manual `Updated` click always forces a fetch.
 - Normalize quota-like rows into compact provider cards.
 - Render top, bottom, left, or right docks in overlay or reserved mode.
 

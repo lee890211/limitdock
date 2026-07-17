@@ -2,10 +2,12 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"limitdock/internal/claudeauth"
 	"limitdock/internal/readmodel"
 )
 
@@ -143,6 +145,49 @@ func orderReadModel(model *readmodel.ReadModel) *readmodel.ReadModel {
 	}
 	model.Snapshots = ordered
 	return model
+}
+
+// statusSnapshot builds a metrics-free snapshot that carries only a provider
+// status (needs_auth, stale, error) for UI surfacing.
+func statusSnapshot(providerID, accountID, status, message string) *readmodel.Snapshot {
+	return &readmodel.Snapshot{
+		ProviderID: providerID,
+		AccountID:  accountID,
+		Status:     status,
+		Message:    message,
+		Metrics:    map[string]readmodel.Metric{},
+	}
+}
+
+// statusReadModel wraps statusSnapshot under the given snapshot key.
+func statusReadModel(key, providerID, accountID, status, message string) *readmodel.ReadModel {
+	return &readmodel.ReadModel{Snapshots: map[string]*readmodel.Snapshot{
+		key: statusSnapshot(providerID, accountID, status, message),
+	}}
+}
+
+// HTTPStatusError reports a non-2xx provider API response so callers can react
+// to specific status codes (e.g. 429 backoff in the cache wrapper).
+type HTTPStatusError struct {
+	StatusCode int
+	Status     string
+}
+
+func (e *HTTPStatusError) Error() string {
+	if strings.TrimSpace(e.Status) != "" {
+		return "HTTP " + e.Status
+	}
+	return fmt.Sprintf("HTTP %d", e.StatusCode)
+}
+
+// IsRateLimitError reports whether err is an HTTP 429 response, either from a
+// usage API call or from claudeauth's token endpoint.
+func IsRateLimitError(err error) bool {
+	var httpErr *HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == 429 {
+		return true
+	}
+	return errors.Is(err, claudeauth.ErrRateLimited)
 }
 
 func snapshotKey(parts ...string) string {

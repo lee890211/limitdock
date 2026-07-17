@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"limitdock/internal/readmodel"
 )
 
 func TestAntigravityStatusReadModelRequiresQuota(t *testing.T) {
@@ -144,6 +147,102 @@ func TestFetchAntigravityStatusFallsBackToCommandModelConfigs(t *testing.T) {
 	}
 	if len(antigravityModelConfigs(status)) != 1 {
 		t.Fatalf("expected command model configs: %#v", status)
+	}
+}
+
+func writeAntigravityCacheFile(t *testing.T, appDataDir, body string) string {
+	t.Helper()
+	root := filepath.Join(appDataDir, "Antigravity")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(root, "antigravity-status.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
+
+func TestAntigravityPrefersLiveProbeOverCacheFile(t *testing.T) {
+	dir := t.TempDir()
+	writeAntigravityCacheFile(t, dir, `{"clientModelConfigs":[{"label":"Gemini 3 Pro","quotaInfo":{"remainingFraction":0.1}}]}`)
+	t.Setenv("APPDATA", dir)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/GetUnleashData"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		case strings.HasSuffix(r.URL.Path, "/GetUserStatus"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"clientModelConfigs":[{"label":"Gemini 3 Pro","quotaInfo":{"remainingFraction":0.9}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	reader := AntigravityReader{endpoints: []antigravityEndpoint{{BaseURL: server.URL}}}
+	model, err := reader.Read(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	snap := model.Snapshots["antigravity-local"]
+	if snap == nil {
+		t.Fatalf("expected antigravity snapshot: %#v", model.Snapshots)
+	}
+	if snap.Status != readmodel.StatusOK {
+		t.Fatalf("expected ok status from live probe, got %q", snap.Status)
+	}
+	metric := snap.Metrics["quota_model_gemini_pro"]
+	if metric.Remaining == nil || *metric.Remaining != 90 {
+		t.Fatalf("expected live remaining percent to win over cache, got %#v", metric)
+	}
+}
+
+func TestAntigravityFallsBackToStaleCacheWhenLiveUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	path := writeAntigravityCacheFile(t, dir, `{"clientModelConfigs":[{"label":"Gemini 3 Pro","quotaInfo":{"remainingFraction":0.55}}]}`)
+	mtime := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	t.Setenv("APPDATA", dir)
+
+	reader := AntigravityReader{endpoints: []antigravityEndpoint{}}
+	model, err := reader.Read(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(model.Snapshots) == 0 {
+		t.Fatalf("expected a stale snapshot from cache, got none")
+	}
+	for key, snap := range model.Snapshots {
+		if snap.Status != readmodel.StatusStale {
+			t.Fatalf("expected stale status for %s, got %q", key, snap.Status)
+		}
+		if !strings.Contains(snap.Message, "10m") {
+			t.Fatalf("expected message to mention cache age, got %q", snap.Message)
+		}
+	}
+}
+
+func TestAntigravityIgnoresCacheFileOlderThanCutoff(t *testing.T) {
+	dir := t.TempDir()
+	path := writeAntigravityCacheFile(t, dir, `{"clientModelConfigs":[{"label":"Gemini 3 Pro","quotaInfo":{"remainingFraction":0.55}}]}`)
+	mtime := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	t.Setenv("APPDATA", dir)
+
+	reader := AntigravityReader{endpoints: []antigravityEndpoint{}}
+	model, err := reader.Read(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(model.Snapshots) != 0 {
+		t.Fatalf("expected empty model for cache beyond staleness cutoff, got %#v", model.Snapshots)
 	}
 }
 

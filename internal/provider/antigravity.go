@@ -27,6 +27,8 @@ import (
 
 type AntigravityReader struct {
 	Log Logger
+
+	endpoints []antigravityEndpoint // overrides endpoint discovery; nil = auto (test seam)
 }
 
 type antigravityEndpoint struct {
@@ -46,6 +48,10 @@ type antigravityLogFile struct {
 }
 
 const antigravityQuotaWindow = "5h"
+
+// antigravityCacheStalenessCutoff bounds how old a disk-cached status file may
+// be before it is used as a fallback when the live probe yields nothing.
+const antigravityCacheStalenessCutoff = 45 * time.Minute
 
 var antigravityModelBlacklist = map[string]bool{
 	"MODEL_CHAT_20706":                       true,
@@ -79,35 +85,80 @@ func (r AntigravityReader) FallbackProviderID() string {
 func (r AntigravityReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	for _, status := range r.cachedStatuses() {
-		model := antigravityStatusReadModel(status)
-		if len(model.Snapshots) > 0 {
-			logAntigravityOnce(r.Log, "success", "Antigravity reader captured local quota rows.")
-			return model, nil
-		}
+
+	if model := r.liveStatusModel(readCtx); model != nil {
+		return model, nil
 	}
 
-	endpoints := antigravityEndpointCandidates(readCtx)
-	if len(endpoints) > 0 {
-		logAntigravityOnce(r.Log, "endpoint-candidates", "Antigravity reader found %d local endpoint candidates.", len(endpoints))
-	}
-	if len(endpoints) > 0 {
-		status, err := fetchFirstAntigravityStatus(readCtx, endpoints, r.Log)
-		if err != nil {
-			logAntigravityOnce(r.Log, "endpoint-missing", "Antigravity reader skipped: %v", err)
-			return emptyReadModel(), nil
-		}
-		model := antigravityStatusReadModel(status)
-		if len(model.Snapshots) > 0 {
-			logAntigravityOnce(r.Log, "success", "Antigravity reader captured local quota rows.")
-			return model, nil
-		}
-		logAntigravityOnce(r.Log, "endpoint-no-quota", "Antigravity reader found a local endpoint, but no quota metrics were exposed.")
-		return emptyReadModel(), nil
+	if model, age, ok := newestAntigravityQuotaCache(r.cachedStatuses()); ok && age <= antigravityCacheStalenessCutoff {
+		markAntigravitySnapshotsStale(model, age)
+		logAntigravityOnce(r.Log, "stale-cache", "Antigravity reader using cached quota rows from %s ago.", age.Round(time.Minute))
+		return model, nil
 	}
 
-	logAntigravityOnce(r.Log, "endpoint-missing", "Antigravity reader skipped: no local quota endpoint found.")
+	logAntigravityOnce(r.Log, "endpoint-missing", "Antigravity reader skipped: no local quota endpoint or usable cache found.")
 	return emptyReadModel(), nil
+}
+
+// liveStatusModel attempts the live language-server probe and returns nil if
+// no endpoint is reachable or none exposes quota metrics.
+func (r AntigravityReader) liveStatusModel(ctx context.Context) *readmodel.ReadModel {
+	endpoints := r.endpoints
+	if endpoints == nil {
+		endpoints = antigravityEndpointCandidates(ctx)
+	}
+	if len(endpoints) == 0 {
+		return nil
+	}
+	logAntigravityOnce(r.Log, "endpoint-candidates", "Antigravity reader found %d local endpoint candidates.", len(endpoints))
+	status, err := fetchFirstAntigravityStatus(ctx, endpoints, r.Log)
+	if err != nil {
+		logAntigravityOnce(r.Log, "endpoint-missing", "Antigravity reader live probe unavailable: %v", err)
+		return nil
+	}
+	model := antigravityStatusReadModel(status)
+	if len(model.Snapshots) == 0 {
+		logAntigravityOnce(r.Log, "endpoint-no-quota", "Antigravity reader found a local endpoint, but no quota metrics were exposed.")
+		return nil
+	}
+	logAntigravityOnce(r.Log, "success", "Antigravity reader captured local quota rows.")
+	return model
+}
+
+// newestAntigravityQuotaCache picks the most recently written quota-bearing
+// cache entry and reports how long ago it was written.
+func newestAntigravityQuotaCache(cached []antigravityCachedStatus) (*readmodel.ReadModel, time.Duration, bool) {
+	var model *readmodel.ReadModel
+	var newest time.Time
+	found := false
+	for _, c := range cached {
+		candidate := antigravityStatusReadModel(c.Status)
+		if len(candidate.Snapshots) == 0 {
+			continue
+		}
+		if !found || c.ModTime.After(newest) {
+			model = candidate
+			newest = c.ModTime
+			found = true
+		}
+	}
+	if !found {
+		return nil, 0, false
+	}
+	return model, time.Since(newest), true
+}
+
+// markAntigravitySnapshotsStale flags every snapshot in model as stale and
+// notes the cache age so the UI can surface it.
+func markAntigravitySnapshotsStale(model *readmodel.ReadModel, age time.Duration) {
+	message := fmt.Sprintf("cached %dm ago; Antigravity app not reachable", int(age.Round(time.Minute).Minutes()))
+	for _, snap := range model.Snapshots {
+		if snap == nil {
+			continue
+		}
+		snap.Status = readmodel.StatusStale
+		snap.Message = message
+	}
 }
 
 type antigravityFetchResult struct {
@@ -155,10 +206,17 @@ func fetchFirstAntigravityStatus(ctx context.Context, endpoints []antigravityEnd
 	return nil, fmt.Errorf("no local quota endpoint returned model configs")
 }
 
-func (r AntigravityReader) cachedStatuses() []map[string]any {
+// antigravityCachedStatus pairs a parsed disk status file with its mtime so
+// callers can pick the newest one and judge how stale it is.
+type antigravityCachedStatus struct {
+	Status  map[string]any
+	ModTime time.Time
+}
+
+func (r AntigravityReader) cachedStatuses() []antigravityCachedStatus {
 	roots := defaultAntigravityDataDirs()
 
-	out := []map[string]any{}
+	out := []antigravityCachedStatus{}
 	seen := map[string]bool{}
 	for _, root := range roots {
 		root = strings.TrimSpace(root)
@@ -172,9 +230,14 @@ func (r AntigravityReader) cachedStatuses() []map[string]any {
 		}
 		for _, path := range antigravityStatusCandidatePaths(root) {
 			status, err := readJSONMap(path)
-			if err == nil {
-				out = append(out, status)
+			if err != nil {
+				continue
 			}
+			var modTime time.Time
+			if fi, statErr := os.Stat(path); statErr == nil {
+				modTime = fi.ModTime()
+			}
+			out = append(out, antigravityCachedStatus{Status: status, ModTime: modTime})
 		}
 	}
 	return out

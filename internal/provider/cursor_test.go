@@ -3,16 +3,20 @@ package provider
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"limitdock/internal/quota"
+	"limitdock/internal/readmodel"
 	"limitdock/internal/settings"
 
 	_ "modernc.org/sqlite"
@@ -168,7 +172,9 @@ func TestCursorUsagePlanPercentFromSpendCents(t *testing.T) {
 	}
 }
 
-func TestCursorReaderSkipsOnAPIError(t *testing.T) {
+// Cursor auth is fine here (no 401); the usage API itself is unavailable, so
+// Read must propagate the error rather than swallowing it into an empty model.
+func TestCursorReaderReturnsErrorOnAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 	}))
@@ -179,11 +185,169 @@ func TestCursorReaderSkipsOnAPIError(t *testing.T) {
 
 	r := CursorReader{DBPath: db, BaseURL: server.URL}
 	model, err := r.Read(context.Background())
+	if err == nil {
+		t.Fatalf("expected error on API failure, got model=%#v", model)
+	}
+	if model != nil {
+		t.Fatalf("expected nil model on API error, got %#v", model)
+	}
+	var httpErr *HTTPStatusError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected *HTTPStatusError, got %T: %v", err, err)
+	}
+	if httpErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", httpErr.StatusCode)
+	}
+}
+
+// cursorTestJWT builds a minimal (unsigned) JWT with only an exp claim, which
+// is all jwtExpiryUnix reads.
+func cursorTestJWT(t *testing.T, exp time.Time) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp.Unix())))
+	return header + "." + payload + ".sig"
+}
+
+func TestCursorReaderCachesRefreshedTokenAcrossPolls(t *testing.T) {
+	resetCursorRefreshCache()
+	t.Cleanup(resetCursorRefreshCache)
+
+	var refreshCalls atomic.Int32
+	var usageCalls atomic.Int32
+	refreshedToken := cursorTestJWT(t, time.Now().Add(1*time.Hour))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		refreshCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"access_token": refreshedToken})
+	})
+	mux.HandleFunc("/aiserver.v1.DashboardService/GetCurrentPeriodUsage", func(w http.ResponseWriter, r *http.Request) {
+		usageCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"planUsage": map[string]any{"totalPercentUsed": 5.0},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	db := createCursorDB(t)
+	insertCursorItem(t, db, "cursorAuth/accessToken", cursorTestJWT(t, time.Now().Add(1*time.Minute)))
+	insertCursorItem(t, db, "cursorAuth/refreshToken", "refresh-token-1")
+	insertCursorItem(t, db, "cursorAuth/cachedEmail", "user@example.com")
+
+	r := CursorReader{DBPath: db, BaseURL: server.URL}
+
+	model1, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if snap := model1.Snapshots["cursor-user@example.com"]; snap == nil || len(snap.Metrics) == 0 {
+		t.Fatalf("expected quota snapshot on first read: %#v", model1.Snapshots)
+	}
+
+	model2, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	if snap := model2.Snapshots["cursor-user@example.com"]; snap == nil || len(snap.Metrics) == 0 {
+		t.Fatalf("expected quota snapshot on second read: %#v", model2.Snapshots)
+	}
+
+	if got := refreshCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 refresh call across both polls, got %d", got)
+	}
+	if got := usageCalls.Load(); got != 2 {
+		t.Fatalf("expected 2 successful usage fetches, got %d", got)
+	}
+}
+
+func TestCursorReaderDropsCacheWhenDBTokenChanges(t *testing.T) {
+	resetCursorRefreshCache()
+	t.Cleanup(resetCursorRefreshCache)
+
+	var refreshCalls atomic.Int32
+	var lastUsageAuth string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		refreshCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"access_token": cursorTestJWT(t, time.Now().Add(1*time.Hour))})
+	})
+	mux.HandleFunc("/aiserver.v1.DashboardService/GetCurrentPeriodUsage", func(w http.ResponseWriter, r *http.Request) {
+		lastUsageAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"planUsage": map[string]any{"totalPercentUsed": 5.0},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	db := createCursorDB(t)
+	insertCursorItem(t, db, "cursorAuth/accessToken", cursorTestJWT(t, time.Now().Add(1*time.Minute)))
+	insertCursorItem(t, db, "cursorAuth/refreshToken", "refresh-token-1")
+	insertCursorItem(t, db, "cursorAuth/cachedEmail", "user@example.com")
+
+	r := CursorReader{DBPath: db, BaseURL: server.URL}
+	if _, err := r.Read(context.Background()); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if got := refreshCalls.Load(); got != 1 {
+		t.Fatalf("expected 1 refresh call after first read, got %d", got)
+	}
+
+	// Cursor app rotates the DB-stored token to a new, already-valid token.
+	tokenB := cursorTestJWT(t, time.Now().Add(2*time.Hour))
+	insertCursorItem(t, db, "cursorAuth/accessToken", tokenB)
+
+	if _, err := r.Read(context.Background()); err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	if got := refreshCalls.Load(); got != 1 {
+		t.Fatalf("expected still 1 refresh call (new DB token doesn't need refresh), got %d", got)
+	}
+	if lastUsageAuth != "Bearer "+tokenB {
+		t.Fatalf("expected usage call to use the new DB token, got %q", lastUsageAuth)
+	}
+}
+
+func TestCursorReaderNeedsAuthWhenRefreshFails(t *testing.T) {
+	resetCursorRefreshCache()
+	t.Cleanup(resetCursorRefreshCache)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	db := createCursorDB(t)
+	insertCursorItem(t, db, "cursorAuth/accessToken", cursorTestJWT(t, time.Now().Add(-1*time.Hour)))
+	insertCursorItem(t, db, "cursorAuth/refreshToken", "refresh-token-1")
+	insertCursorItem(t, db, "cursorAuth/cachedEmail", "user@example.com")
+
+	r := CursorReader{DBPath: db, BaseURL: server.URL}
+	model, err := r.Read(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(model.Snapshots) != 0 {
-		t.Fatalf("expected empty model on API error: %#v", model.Snapshots)
+	snap := model.Snapshots["cursor-user@example.com"]
+	if snap == nil {
+		t.Fatalf("expected needs_auth snapshot: %#v", model.Snapshots)
+	}
+	if snap.Status != readmodel.StatusNeedsAuth {
+		t.Fatalf("expected status %q, got %q", readmodel.StatusNeedsAuth, snap.Status)
+	}
+	if snap.ProviderID != "cursor" {
+		t.Fatalf("wrong provider id: %q", snap.ProviderID)
+	}
+	if len(snap.Metrics) != 0 {
+		t.Fatalf("expected no metrics on needs_auth snapshot, got %#v", snap.Metrics)
 	}
 }
 
