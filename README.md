@@ -21,15 +21,15 @@ LimitDock reads quota directly from each tool's local credentials, session files
 
 ## Provider Support
 
-LimitDock renders only quota-like rows. A provider is absent from the dock if no quota, rate-limit, credit, or reset row is available.
+LimitDock renders only quota-like rows. A provider is absent from the dock only if it has never been configured locally; once local credentials exist, the card stays visible even if it needs sign-in (`Sign in`) or the latest fetch failed and last-known values are shown instead (`stale`).
 
 | Provider or agent | Notes |
 | --- | --- |
-| Claude Code | OAuth usage from `~/.claude/.credentials.json` or `CLAUDE_CODE_OAUTH_TOKEN`. Real utilization percent, not a time-elapsed estimate. |
-| Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` events so 5h and 7d windows stay accurate. |
-| Antigravity | Local language-server status or common `%APPDATA%\Antigravity` cache data. No card when no quota rows are present. |
-| Gemini CLI | `~/.gemini/oauth_creds.json` (or related credential files) and Code Assist `retrieveUserQuota`. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
-| Cursor | Token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and Connect `GetCurrentPeriodUsage`. Plan-cycle quota from `plan_percent_used`; reset from `billing_cycle_end`. |
+| Claude Code | OAuth usage from `~/.claude/.credentials.json`, `CLAUDE_CODE_OAUTH_TOKEN`, or LimitDock's own Connect sign-in (see below). Expired CLI tokens are refreshed and written back automatically, so quota keeps working without the `claude` CLI running. Real utilization percent, not a time-elapsed estimate. |
+| Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` events so 5h and 7d windows stay accurate. Expired tokens are refreshed and written back to `auth.json` automatically. |
+| Antigravity | Local language-server status first; falls back to a cached `%APPDATA%\Antigravity` quota file only when it is under 45 minutes old (shown as `stale`). No card when neither source has quota rows. |
+| Gemini CLI | `~/.gemini/oauth_creds.json` (or related credential files) and Code Assist `retrieveUserQuota`. Expired tokens are refreshed and written back automatically. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
+| Cursor | Token from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and Connect `GetCurrentPeriodUsage`. Refreshed tokens are cached in memory across polls. Plan-cycle quota from `plan_percent_used`; reset from `billing_cycle_end`. |
 
 ## User Guide
 
@@ -81,8 +81,12 @@ Right-click the tray icon:
 
 - `Hide Status Bar`: hides the dock, unregisters reserved mode, restores the Windows work area, disables hover reveal, and pauses refresh. Hide is session-only.
 - `Show Status Bar`: restores the saved mode, edge, and pin state, then refreshes.
-- `Settings`: opens docking, theme, refresh, startup, threshold, and log/diagnostic controls.
+- `Settings`: opens docking, theme, refresh, startup, threshold, provider connection, and log/diagnostic controls.
 - `Exit`: closes LimitDock.
+
+### Connect Claude
+
+If Claude has no usable local credentials, its card shows `Sign in`. Open the Connect flow from the tray's `Connect Claude...` item (visible only while Claude needs sign-in), from `Settings → Providers` (always available), or by double-clicking the Claude card. Click through to open the Claude sign-in page in your browser, approve LimitDock, then paste the code the page shows back into the dialog. LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`, so this works even without the `claude` CLI installed. Disconnect from the same `Settings → Providers` panel.
 
 ### Docking
 

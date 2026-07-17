@@ -3,68 +3,93 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"limitdock/internal/claudeauth"
 	"limitdock/internal/readmodel"
 )
 
 const (
-	claudeCodeAPIBase  = "https://api.anthropic.com"
-	claudeCodeUsagePath = "/api/oauth/usage"
+	claudeCodeAPIBase    = "https://api.anthropic.com"
+	claudeCodeUsagePath  = "/api/oauth/usage"
 	claudeCodeBetaHeader = "oauth-2025-04-20"
 	claudeCodeUserAgent  = "claude-code/2.1.0"
 	claudeCodeTimeout    = 10 * time.Second
+	claudeSnapshotKey    = "claude-code"
 )
 
 // ClaudeCodeReader fetches quota directly from the Anthropic OAuth usage API.
-// Credentials are auto-discovered from CLAUDE_CODE_OAUTH_TOKEN env var,
-// CLAUDE_CONFIG_DIR env var, or ~/.claude/.credentials.json.
+// Tokens come from CLAUDE_CODE_OAUTH_TOKEN, LimitDock's own store (Connect
+// flow), or the Claude Code CLI credentials file; expired tokens are refreshed
+// (and the rotated pair persisted) by claudeauth.
 type ClaudeCodeReader struct {
 	Log             Logger
-	CredentialsPath string // overrides auto-discovery; empty = auto
-	BaseURL         string // overrides API base URL; empty = production
+	CredentialsPath string // overrides CLI credentials auto-discovery; empty = auto
+	CredStoreDir    string // LimitDock-owned token store directory; empty = disabled
+	TokenURL        string // OAuth token endpoint override; empty = production
+	BaseURL         string // overrides usage API base URL; empty = production
 }
 
 func (r ClaudeCodeReader) Name() string { return "claude-code" }
 
-type claudeCredentialsFile struct {
-	ClaudeAiOauth *claudeOAuthToken `json:"claudeAiOauth"`
-}
-
-type claudeOAuthToken struct {
-	AccessToken string `json:"accessToken"`
-	ExpiresAt   int64  `json:"expiresAt"` // unix milliseconds
+func (r ClaudeCodeReader) manager() claudeauth.Manager {
+	return claudeauth.Manager{
+		Log:             r.Log,
+		CredentialsPath: r.CredentialsPath,
+		StoreDir:        r.CredStoreDir,
+		TokenURL:        r.TokenURL,
+	}
 }
 
 type claudeUsageResponse struct {
-	FiveHour        *claudeUsageBucket `json:"five_hour"`
-	SevenDay        *claudeUsageBucket `json:"seven_day"`
-	SevenDaySonnet  *claudeUsageBucket `json:"seven_day_sonnet"`
-	SevenDayOpus    *claudeUsageBucket `json:"seven_day_opus"`
-	SevenDayCowork  *claudeUsageBucket `json:"seven_day_cowork"`
+	FiveHour       *claudeUsageBucket `json:"five_hour"`
+	SevenDay       *claudeUsageBucket `json:"seven_day"`
+	SevenDaySonnet *claudeUsageBucket `json:"seven_day_sonnet"`
+	SevenDayOpus   *claudeUsageBucket `json:"seven_day_opus"`
+	SevenDayCowork *claudeUsageBucket `json:"seven_day_cowork"`
 }
 
 type claudeUsageBucket struct {
-	Utilization float64  `json:"utilization"`
-	ResetsAt    *string  `json:"resets_at"`
+	Utilization float64 `json:"utilization"`
+	ResetsAt    *string `json:"resets_at"`
 }
 
 func (r ClaudeCodeReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
-	token, err := r.resolveToken()
+	tok, err := r.manager().Resolve(ctx)
 	if err != nil {
-		if r.Log != nil {
-			r.Log.Printf("Claude Code reader skipped: %v", err)
+		if errors.Is(err, claudeauth.ErrNoSource) {
+			if r.Log != nil {
+				r.Log.Printf("Claude Code reader skipped: %v", err)
+			}
+			return emptyReadModel(), nil
 		}
-		return emptyReadModel(), nil
+		var authErr *claudeauth.AuthError
+		if errors.As(err, &authErr) {
+			if r.Log != nil {
+				r.Log.Printf("Claude Code needs sign-in: %v", err)
+			}
+			return statusReadModel(claudeSnapshotKey, "claude_code", claudeSnapshotKey, readmodel.StatusNeedsAuth, authErr.Reason), nil
+		}
+		return nil, fmt.Errorf("claude auth: %w", err)
 	}
 
-	usage, err := r.fetchUsage(ctx, token)
+	usage, err := r.fetchUsage(ctx, tok.AccessToken)
 	if err != nil {
+		var httpErr *HTTPStatusError
+		if errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden) {
+			msg := fmt.Sprintf("usage API rejected the %s token (%s)", tok.Source, httpErr.Error())
+			if httpErr.StatusCode == http.StatusForbidden {
+				msg += "; the token may lack the user:profile scope — use Connect Claude to sign in"
+			}
+			if r.Log != nil {
+				r.Log.Printf("Claude Code needs sign-in: %s", msg)
+			}
+			return statusReadModel(claudeSnapshotKey, "claude_code", claudeSnapshotKey, readmodel.StatusNeedsAuth, msg), nil
+		}
 		return nil, fmt.Errorf("claude usage API: %w", err)
 	}
 
@@ -72,66 +97,12 @@ func (r ClaudeCodeReader) Read(ctx context.Context) (*readmodel.ReadModel, error
 	if snap == nil || len(snap.Metrics) == 0 {
 		return emptyReadModel(), nil
 	}
+	if tok.AccountEmail != "" {
+		snap.AccountID = tok.AccountEmail
+	}
 	return &readmodel.ReadModel{
-		Snapshots: map[string]*readmodel.Snapshot{"claude-code": snap},
+		Snapshots: map[string]*readmodel.Snapshot{claudeSnapshotKey: snap},
 	}, nil
-}
-
-func (r ClaudeCodeReader) resolveToken() (string, error) {
-	if token := strings.TrimSpace(os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")); token != "" {
-		return token, nil
-	}
-	path := r.CredentialsPath
-	if path == "" {
-		path = discoverClaudeCredentialsPath()
-	}
-	if path == "" {
-		return "", fmt.Errorf("credentials file not found")
-	}
-	return readClaudeAccessToken(path)
-}
-
-func discoverClaudeCredentialsPath() string {
-	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
-		p := filepath.Join(dir, ".credentials.json")
-		if claudeFileExists(p) {
-			return p
-		}
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	p := filepath.Join(home, ".claude", ".credentials.json")
-	if claudeFileExists(p) {
-		return p
-	}
-	return ""
-}
-
-func readClaudeAccessToken(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", path, err)
-	}
-	var creds claudeCredentialsFile
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return "", fmt.Errorf("parsing credentials: %w", err)
-	}
-	if creds.ClaudeAiOauth == nil {
-		return "", fmt.Errorf("no claudeAiOauth in credentials")
-	}
-	token := strings.TrimSpace(creds.ClaudeAiOauth.AccessToken)
-	if token == "" {
-		return "", fmt.Errorf("empty access token")
-	}
-	if creds.ClaudeAiOauth.ExpiresAt > 0 {
-		expiresAt := time.UnixMilli(creds.ClaudeAiOauth.ExpiresAt)
-		if time.Now().Add(30 * time.Second).After(expiresAt) {
-			return "", fmt.Errorf("access token expired at %s", expiresAt.Format(time.RFC3339))
-		}
-	}
-	return token, nil
 }
 
 func (r ClaudeCodeReader) fetchUsage(ctx context.Context, token string) (*claudeUsageResponse, error) {
@@ -158,7 +129,7 @@ func (r ClaudeCodeReader) fetchUsage(ctx context.Context, token string) (*claude
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %s", resp.Status)
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	var usage claudeUsageResponse
 	if err := json.NewDecoder(resp.Body).Decode(&usage); err != nil {
@@ -200,15 +171,10 @@ func claudeUsageToSnapshot(usage *claudeUsageResponse) *readmodel.Snapshot {
 	}
 	return &readmodel.Snapshot{
 		ProviderID: "claude_code",
-		AccountID:  "claude-code",
+		AccountID:  claudeSnapshotKey,
 		Status:     "ok",
 		Metrics:    metrics,
 		Resets:     resets,
 		Raw:        map[string]any{"source": "claude-code-api"},
 	}
-}
-
-func claudeFileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }

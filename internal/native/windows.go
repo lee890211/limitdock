@@ -53,6 +53,30 @@ func (m *Mutex) Close() {
 	}
 }
 
+// OpenURL opens an http/https URL in the user's default browser via
+// ShellExecuteW. explorer.exe must not be used for this: it ignores URL query
+// strings and falls back to opening a File Explorer window.
+func OpenURL(url string) error {
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("refusing to open non-http URL %q", url)
+	}
+	verb, err := windows.UTF16PtrFromString("open")
+	if err != nil {
+		return err
+	}
+	target, err := windows.UTF16PtrFromString(url)
+	if err != nil {
+		return err
+	}
+	const swShowNormal = 1
+	r1, _, callErr := procShellExecute.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(target)), 0, 0, swShowNormal)
+	// ShellExecuteW reports success with a value greater than 32.
+	if r1 <= 32 {
+		return fmt.Errorf("ShellExecuteW failed (code %d): %v", r1, callErr)
+	}
+	return nil
+}
+
 func PrimaryBounds() Rect {
 	w := callInt(user32.NewProc("GetSystemMetrics"), 0)
 	h := callInt(user32.NewProc("GetSystemMetrics"), 1)
@@ -403,6 +427,7 @@ var (
 	procMonitorFromPoint           = user32.NewProc("MonitorFromPoint")
 	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
 	procSHAppBarMessage            = shell32.NewProc("SHAppBarMessage")
+	procShellExecute               = shell32.NewProc("ShellExecuteW")
 	shcore                         = windows.NewLazySystemDLL("shcore.dll")
 	procGetDpiForMonitor           = shcore.NewProc("GetDpiForMonitor")
 )

@@ -3,13 +3,16 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"limitdock/internal/quota"
+	"limitdock/internal/readmodel"
 	"limitdock/internal/settings"
 )
 
@@ -162,6 +165,150 @@ func TestClaudeCodeReaderResetsStored(t *testing.T) {
 	}
 	if _, ok := snap.Resets["usage_seven_day_reset"]; ok {
 		t.Errorf("reset key should not exist for null resets_at")
+	}
+}
+
+func TestClaudeCodeReaderExpiredCredentialsTriggersRefresh(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	var usageAuth string
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		usageAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"five_hour":{"utilization":12.0,"resets_at":"2026-08-01T00:00:00Z"}}`))
+	}))
+	defer usageSrv.Close()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"refreshed-token","refresh_token":"rotated-refresh","expires_in":28800}`))
+	}))
+	defer tokenSrv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".credentials.json")
+	creds := map[string]any{
+		"claudeAiOauth": map[string]any{
+			"accessToken":  "expired-token",
+			"refreshToken": "old-refresh",
+			"expiresAt":    int64(1000), // long past
+		},
+	}
+	data, _ := json.Marshal(creds)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write creds: %v", err)
+	}
+
+	reader := ClaudeCodeReader{BaseURL: usageSrv.URL, CredentialsPath: path, TokenURL: tokenSrv.URL, CredStoreDir: t.TempDir()}
+	model, err := reader.Read(context.Background())
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if model.Snapshots["claude-code"] == nil {
+		t.Fatalf("missing snapshot after refresh: %#v", model.Snapshots)
+	}
+	if usageAuth != "Bearer refreshed-token" {
+		t.Fatalf("usage call used %q, want refreshed token", usageAuth)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back creds: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(after, &doc); err != nil {
+		t.Fatalf("parse back creds: %v", err)
+	}
+	oauth, _ := doc["claudeAiOauth"].(map[string]any)
+	if oauth["accessToken"] != "refreshed-token" || oauth["refreshToken"] != "rotated-refresh" {
+		t.Fatalf("rotated pair not written back: %#v", oauth)
+	}
+}
+
+func TestClaudeCodeReaderRefreshRejectionSurfacesNeedsAuth(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer tokenSrv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".credentials.json")
+	creds := map[string]any{
+		"claudeAiOauth": map[string]any{
+			"accessToken":  "expired-token",
+			"refreshToken": "dead-refresh",
+			"expiresAt":    int64(1000),
+		},
+	}
+	data, _ := json.Marshal(creds)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write creds: %v", err)
+	}
+
+	reader := ClaudeCodeReader{CredentialsPath: path, TokenURL: tokenSrv.URL, CredStoreDir: t.TempDir()}
+	model, err := reader.Read(context.Background())
+	if err != nil {
+		t.Fatalf("needs_auth should not be an error: %v", err)
+	}
+	snap := model.Snapshots["claude-code"]
+	if snap == nil || snap.Status != readmodel.StatusNeedsAuth {
+		t.Fatalf("expected needs_auth snapshot, got %#v", snap)
+	}
+}
+
+func TestClaudeCodeReaderUsage403SurfacesNeedsAuth(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "inference-only-token")
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer usageSrv.Close()
+
+	model, err := ClaudeCodeReader{BaseURL: usageSrv.URL, CredStoreDir: t.TempDir()}.Read(context.Background())
+	if err != nil {
+		t.Fatalf("403 should map to needs_auth, not error: %v", err)
+	}
+	snap := model.Snapshots["claude-code"]
+	if snap == nil || snap.Status != readmodel.StatusNeedsAuth {
+		t.Fatalf("expected needs_auth snapshot, got %#v", snap)
+	}
+	if !strings.Contains(snap.Message, "user:profile") {
+		t.Fatalf("403 message should mention scope: %q", snap.Message)
+	}
+}
+
+func TestClaudeCodeReaderUsage429ReturnsTypedError(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer usageSrv.Close()
+
+	_, err := ClaudeCodeReader{BaseURL: usageSrv.URL, CredStoreDir: t.TempDir()}.Read(context.Background())
+	var httpErr *HTTPStatusError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected HTTPStatusError 429, got %v", err)
+	}
+}
+
+func TestClaudeCodeReaderMandatoryHeaders(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
+	var ua, beta string
+	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ua = r.Header.Get("User-Agent")
+		beta = r.Header.Get("anthropic-beta")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"five_hour":{"utilization":1.0}}`))
+	}))
+	defer usageSrv.Close()
+
+	if _, err := (ClaudeCodeReader{BaseURL: usageSrv.URL, CredStoreDir: t.TempDir()}).Read(context.Background()); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if ua != claudeCodeUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", ua, claudeCodeUserAgent)
+	}
+	if beta != claudeCodeBetaHeader {
+		t.Fatalf("anthropic-beta = %q, want %q", beta, claudeCodeBetaHeader)
 	}
 }
 

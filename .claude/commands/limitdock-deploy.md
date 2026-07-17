@@ -71,8 +71,15 @@ The install directory is `E:\LimitDock-$tag`. Prefer a full folder install so ic
 $installDir = "E:\LimitDock-$tag"
 $src = "dist\LimitDock-$tag"
 if (-not (Test-Path $installDir)) {
+    $previousInstall = Get-ChildItem -Path "E:\" -Directory -Filter "LimitDock-v*" -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName "state") } |
+        Sort-Object Name -Descending |
+        Select-Object -First 1
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
     Copy-Item -Path "$src\*" -Destination $installDir -Recurse -Force
+    if ($previousInstall) {
+        Copy-Item -Path (Join-Path $previousInstall.FullName "state") -Destination (Join-Path $installDir "state") -Recurse -Force
+    }
 } else {
     $stateBackup = Join-Path $env:TEMP "limitdock-state-backup"
     if (Test-Path (Join-Path $installDir "state")) {
@@ -86,7 +93,7 @@ if (-not (Test-Path $installDir)) {
 }
 ```
 
-Do not copy only `LimitDock.exe` into an older folder; that leaves out icons and the manifest.
+Do not copy only `LimitDock.exe` into an older folder; that leaves out icons and the manifest. When installing into a brand-new dated folder, LimitDock also locates the most recent previous `E:\LimitDock-v*` install (by folder name) and copies its `state\` directory into the new install before first launch, so DPAPI-encrypted credentials in `state\credentials\` survive the version upgrade.
 
 ## Checklist
 
@@ -96,3 +103,4 @@ After all steps, confirm:
 - [ ] Annotated tag `$tag` pushed to origin
 - [ ] GitHub release at `https://github.com/lee890211/limitdock/releases/tag/$tag` has the zip asset
 - [ ] `E:\LimitDock-$tag\` has `LimitDock.exe`, manifest, and `assets/icons/`
+- [ ] If `E:\LimitDock-$tag\` was a new dated folder and an older `E:\LimitDock-v*` install existed, its `state\` directory (including `state\credentials\`) was carried into the new install

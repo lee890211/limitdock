@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"limitdock/internal/fsutil"
 	"limitdock/internal/readmodel"
 )
 
@@ -21,6 +23,7 @@ const (
 	geminiLoadCodeAssistURL = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 	geminiRetrieveQuotaURL  = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
 	geminiProjectsURL       = "https://cloudresourcemanager.googleapis.com/v1/projects"
+	geminiOAuthTokenURL     = "https://oauth2.googleapis.com/token"
 	// Public credentials embedded in the Gemini CLI binary (google/gemini-cli).
 	// Split to avoid GitHub secret-scanning false positives on these known-public strings.
 	geminiCLIClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j" + ".apps.googleusercontent.com"
@@ -29,13 +32,19 @@ const (
 
 var geminiLogOnce sync.Map
 
+// errGeminiCredentialsNotFound signals that no credentials file could be
+// found at all (auto-discovery came up empty), as opposed to a file that
+// exists but is unusable. Read() treats the two cases differently.
+var errGeminiCredentialsNotFound = errors.New("gemini credentials file not found")
+
 type GeminiCLIReader struct {
 	Log             Logger
 	CredentialsPath string // overrides auto-discovery; empty = auto
 	BaseURL         string // overrides API base; empty = production
+	TokenURL        string // overrides OAuth refresh endpoint; empty = production
 }
 
-func (r GeminiCLIReader) Name() string             { return "gemini-cli" }
+func (r GeminiCLIReader) Name() string               { return "gemini-cli" }
 func (r GeminiCLIReader) FallbackProviderID() string { return "gemini_cli" }
 
 type geminiCredentials struct {
@@ -51,14 +60,18 @@ type geminiCredentials struct {
 func (r GeminiCLIReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 	token, err := r.resolveToken()
 	if err != nil {
-		logGeminiOnce(r.Log, "skip", "Gemini CLI reader skipped: %v", err)
-		return emptyReadModel(), nil
+		if errors.Is(err, errGeminiCredentialsNotFound) || errors.Is(err, os.ErrNotExist) {
+			logGeminiOnce(r.Log, "skip", "Gemini CLI reader skipped: %v", err)
+			return emptyReadModel(), nil
+		}
+		logGeminiOnce(r.Log, "needs-auth", "Gemini CLI reader: credentials unusable: %v", err)
+		key := snapshotKey("gemini_cli", "local")
+		return statusReadModel(key, "gemini_cli", "local", readmodel.StatusNeedsAuth, err.Error()), nil
 	}
 
 	data, err := r.fetchQuota(ctx, token)
 	if err != nil {
-		logGeminiOnce(r.Log, "api-err", "Gemini CLI reader skipped: quota API unavailable: %v", err)
-		return emptyReadModel(), nil
+		return nil, fmt.Errorf("gemini quota API: %w", err)
 	}
 
 	snap := geminiQuotaToSnapshot(data)
@@ -80,9 +93,9 @@ func (r GeminiCLIReader) resolveToken() (string, error) {
 		path = discoverGeminiCredentialsPath()
 	}
 	if path == "" {
-		return "", fmt.Errorf("~/.gemini/oauth_credentials.json not found")
+		return "", errGeminiCredentialsNotFound
 	}
-	return readGeminiAccessToken(path)
+	return readGeminiAccessToken(path, r.TokenURL)
 }
 
 func discoverGeminiCredentialsPath() string {
@@ -109,7 +122,7 @@ func discoverGeminiCredentialsPath() string {
 	return ""
 }
 
-func readGeminiAccessToken(path string) (string, error) {
+func readGeminiAccessToken(path, tokenURL string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)
@@ -137,11 +150,12 @@ func readGeminiAccessToken(path string) (string, error) {
 		}
 	}
 	if expired {
-		if refreshed, err := refreshGeminiToken(creds); err == nil {
-			_ = persistGeminiAccessToken(path, creds, refreshed)
+		refreshed, refreshErr := refreshGeminiToken(creds, tokenURL)
+		if refreshErr == nil {
+			_ = persistGeminiAccessToken(path, refreshed)
 			return refreshed, nil
 		}
-		return "", fmt.Errorf("access token expired at %s", expiredAt.Format(time.RFC3339))
+		return "", fmt.Errorf("access token expired at %s: refresh failed: %w", expiredAt.Format(time.RFC3339), refreshErr)
 	}
 	token := strings.TrimSpace(creds.AccessToken)
 	if token == "" {
@@ -150,7 +164,7 @@ func readGeminiAccessToken(path string) (string, error) {
 	return token, nil
 }
 
-func refreshGeminiToken(creds geminiCredentials) (string, error) {
+func refreshGeminiToken(creds geminiCredentials, tokenURL string) (string, error) {
 	if creds.RefreshToken == "" {
 		return "", fmt.Errorf("missing refresh_token")
 	}
@@ -168,10 +182,14 @@ func refreshGeminiToken(creds geminiCredentials) (string, error) {
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
 	}
+	endpoint := tokenURL
+	if endpoint == "" {
+		endpoint = geminiOAuthTokenURL
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), geminiCLITimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://oauth2.googleapis.com/token",
+		endpoint,
 		strings.NewReader(vals.Encode()))
 	if err != nil {
 		return "", err
@@ -221,12 +239,16 @@ func (r GeminiCLIReader) fetchQuota(ctx context.Context, token string) (map[stri
 	if err != nil {
 		return nil, fmt.Errorf("loadCodeAssist: %w", err)
 	}
-	projectID := discoverGeminiProjectID(token, loadData)
+	projectID := discoverGeminiProjectID(ctx, token, loadData)
 	quotaBody := map[string]any{}
 	if projectID != "" {
 		quotaBody["project"] = projectID
 	}
-	return geminiPostJSON(ctx, quotaURL, token, quotaBody)
+	data, err := geminiPostJSON(ctx, quotaURL, token, quotaBody)
+	if err != nil {
+		return nil, fmt.Errorf("retrieveUserQuota: %w", err)
+	}
+	return data, nil
 }
 
 func geminiPostJSON(ctx context.Context, url, token string, body map[string]any) (map[string]any, error) {
@@ -247,7 +269,7 @@ func geminiPostJSON(ctx context.Context, url, token string, body map[string]any)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %s", resp.Status)
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -256,11 +278,11 @@ func geminiPostJSON(ctx context.Context, url, token string, body map[string]any)
 	return out, nil
 }
 
-func discoverGeminiProjectID(token string, loadData map[string]any) string {
+func discoverGeminiProjectID(ctx context.Context, token string, loadData map[string]any) string {
 	if id := readFirstStringDeep(loadData, "cloudaicompanionProject", "cloudAiCompanionProject", "project"); id != "" {
 		return id
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), geminiCLITimeout)
+	ctx, cancel := context.WithTimeout(ctx, geminiCLITimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, geminiProjectsURL, nil)
 	if err != nil {
@@ -319,14 +341,33 @@ func readFirstStringDeep(value any, keys ...string) string {
 	return ""
 }
 
-func persistGeminiAccessToken(path string, creds geminiCredentials, accessToken string) error {
-	creds.AccessToken = accessToken
-	creds.ExpiryDate = time.Now().Add(55 * time.Minute).UnixMilli()
+// persistGeminiAccessToken updates access_token, expiry_date, and expiry in
+// the on-disk credentials file, leaving every other key byte-identical. It
+// round-trips through map[string]any (rather than the typed geminiCredentials
+// struct) so unknown fields written by the Gemini CLI survive, and writes
+// atomically so readers never observe a partial file.
+func persistGeminiAccessToken(path, accessToken string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var creds map[string]any
+	if err := json.Unmarshal(raw, &creds); err != nil {
+		return err
+	}
+	// expiry_date (unix ms, Node.js format) and expiry (RFC3339, gcloud
+	// format) must be kept in sync: readGeminiAccessToken treats either one
+	// being in the past as expired, so a stale sibling field re-triggers a
+	// refresh on every subsequent poll.
+	expiresAt := time.Now().Add(55 * time.Minute)
+	creds["access_token"] = accessToken
+	creds["expiry_date"] = expiresAt.UnixMilli()
+	creds["expiry"] = expiresAt.UTC().Format(time.RFC3339)
 	b, err := json.MarshalIndent(creds, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o600)
+	return fsutil.AtomicWriteFile(path, b, 0o600)
 }
 
 // geminiQuotaToSnapshot converts an AI Studio quota API response to a Snapshot.
@@ -356,17 +397,29 @@ func geminiQuotaToSnapshot(data map[string]any) *readmodel.Snapshot {
 		if modelName == "" {
 			return
 		}
+		// Free-tier responses mark models that are not available at all with
+		// remainingFraction 0 and an epoch resetTime; a genuine exhaustion
+		// carries a real future reset. Skip the sentinel buckets so the card
+		// is not dominated by a fake 0% row.
+		if remaining <= 0 && geminiSentinelReset(reset) {
+			return
+		}
 		pct := normalizeRemainingPercent(remaining)
 		key := "quota_model_" + slug(geminiModelPoolLabel(modelName))
-		if _, exists := metrics[key]; exists {
-			return
+		if existing, exists := metrics[key]; exists {
+			// Lowest remaining wins within a pooled model family.
+			if existing.Remaining != nil && *existing.Remaining <= pct {
+				return
+			}
 		}
 		metrics[key] = readmodel.Metric{
 			Remaining: floatPtr(pct),
 			Unit:      "%",
 		}
-		if reset != "" {
+		if reset != "" && !geminiSentinelReset(reset) {
 			resets[key+"_reset"] = reset
+		} else {
+			delete(resets, key+"_reset")
 		}
 	})
 
@@ -473,6 +526,14 @@ func collectGeminiQuotaBuckets(value any, emit func(modelName string, remaining 
 			collectGeminiQuotaBuckets(child, emit)
 		}
 	}
+}
+
+// geminiSentinelReset reports whether a bucket resetTime is the epoch
+// placeholder (or absent) that the quota API uses for models without an
+// actual quota window.
+func geminiSentinelReset(reset string) bool {
+	reset = strings.TrimSpace(reset)
+	return reset == "" || strings.HasPrefix(reset, "1970-")
 }
 
 func geminiModelPoolLabel(name string) string {

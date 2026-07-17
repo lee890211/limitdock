@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"limitdock/internal/fsutil"
 	"limitdock/internal/readmodel"
 
 	_ "modernc.org/sqlite"
@@ -25,13 +27,31 @@ const (
 	maxCodexSessionFiles = 160
 	codexLogLookback     = 7 * 24 * time.Hour
 	codexLogQueryLimit   = 64
+
+	codexWhamUsageURL = "https://chatgpt.com/backend-api/wham/usage"
+	// codexOAuthClientID is the Codex CLI's public OAuth client id, embedded in
+	// the official `codex` CLI binary. It is not a secret.
+	codexOAuthClientID       = "app_EMoamEEZ73f0CkXaXp7hrann"
+	codexOAuthTokenURL       = "https://auth.openai.com/oauth/token"
+	codexTokenRefreshTimeout = 8 * time.Second
 )
 
 var codexLogOnce sync.Map
 
 type CodexReader struct {
-	Root string
-	Log  Logger
+	Root     string
+	Log      Logger
+	BaseURL  string // overrides the wham usage API base; empty = production
+	TokenURL string // overrides the OAuth token refresh endpoint; empty = production
+}
+
+// codexWhamOutcome carries the result of attempting the wham usage API,
+// including enough detail for Read to build the correct status/error per the
+// needs_auth / stale / error contract.
+type codexWhamOutcome struct {
+	Snapshot  *readmodel.Snapshot
+	NeedsAuth bool  // credentials exist locally but are unusable (refresh failed or 401/403 persisted)
+	Err       error // present when Snapshot == nil: the needs_auth reason, or a transient error to propagate
 }
 
 type codexSessionFile struct {
@@ -58,7 +78,7 @@ func (r CodexReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 		root = defaultCodexRoot()
 	}
 
-	whamSnap := r.tryWham(ctx, root)
+	wham := r.tryWham(ctx, root)
 
 	// Also scan local JSONL/sqlite to fill in any windows the wham API omits
 	// (wham often returns only the primary 5h window; local events carry the 7d secondary).
@@ -71,7 +91,19 @@ func (r CodexReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 		localSnap = codexSnapshot(event.Limits)
 	}
 
-	snap := mergeCodexSnaps(whamSnap, localSnap)
+	if wham.Snapshot == nil && localSnap == nil {
+		switch {
+		case wham.NeedsAuth:
+			logCodexOnce(r.Log, "needs-auth", "Codex reader needs re-authentication: %v", wham.Err)
+			return statusReadModel(snapshotKey("codex", "cli"), "codex", "cli", readmodel.StatusNeedsAuth, wham.Err.Error()), nil
+		case wham.Err != nil:
+			return nil, wham.Err
+		}
+		logCodexOnce(r.Log, "missing", "Codex reader skipped: no local rate-limit rows found and wham API unavailable.")
+		return emptyReadModel(), nil
+	}
+
+	snap := mergeCodexSnaps(wham.Snapshot, localSnap)
 	if snap == nil || len(snap.Metrics) == 0 {
 		logCodexOnce(r.Log, "missing", "Codex reader skipped: no local rate-limit rows found and wham API unavailable.")
 		return emptyReadModel(), nil
@@ -137,48 +169,161 @@ func preferCodexMetric(existing, incoming readmodel.Metric) readmodel.Metric {
 	}
 }
 
-func (r CodexReader) tryWham(ctx context.Context, root string) *readmodel.Snapshot {
-	token, err := readCodexAuthToken(root)
-	if err != nil {
-		return nil
-	}
-	data, err := fetchCodexWhamUsage(ctx, token)
-	if err != nil {
-		return nil
-	}
-	return codexWhamToSnapshot(data)
-}
-
-func readCodexAuthToken(root string) (string, error) {
+// tryWham resolves a usable Codex access token (refreshing it first if it is
+// missing, expired, or about to expire) and calls the wham usage API. If the
+// call fails with 401/403 it refreshes and retries exactly once more.
+func (r CodexReader) tryWham(ctx context.Context, root string) codexWhamOutcome {
 	authPath := filepath.Join(root, "auth.json")
-	b, err := os.ReadFile(authPath)
+	doc, err := readCodexAuthDoc(authPath)
 	if err != nil {
-		return "", err
+		if os.IsNotExist(err) {
+			return codexWhamOutcome{}
+		}
+		return codexWhamOutcome{NeedsAuth: true, Err: fmt.Errorf("codex auth.json unreadable: %w", err)}
 	}
-	var auth struct {
-		Tokens struct {
-			AccessToken string `json:"access_token"`
-		} `json:"tokens"`
+	accessToken, _, accountID := codexAuthFields(doc)
+
+	tokenURL := strings.TrimSpace(r.TokenURL)
+	if tokenURL == "" {
+		tokenURL = codexOAuthTokenURL
 	}
-	if err := json.Unmarshal(b, &auth); err != nil {
-		return "", err
+	whamURL := strings.TrimSpace(r.BaseURL)
+	if whamURL == "" {
+		whamURL = codexWhamUsageURL
 	}
-	token := strings.TrimSpace(auth.Tokens.AccessToken)
-	if token == "" {
-		return "", fmt.Errorf("no access_token in codex auth.json")
+
+	refresh := func() error {
+		_, refreshToken, _ := codexAuthFields(doc)
+		if refreshToken == "" {
+			return fmt.Errorf("no refresh_token in codex auth.json")
+		}
+		newToken, err := refreshCodexAuth(ctx, authPath, tokenURL, doc, refreshToken)
+		if err != nil {
+			return err
+		}
+		accessToken = newToken
+		return nil
 	}
-	return token, nil
+
+	if accessToken == "" || codexTokenExpiringSoon(accessToken) {
+		if err := refresh(); err != nil {
+			return codexWhamOutcome{NeedsAuth: true, Err: fmt.Errorf("refreshing codex token: %w", err)}
+		}
+	}
+
+	data, err := fetchCodexWhamUsage(ctx, whamURL, accessToken, accountID)
+	if codexIsAuthHTTPError(err) {
+		if rerr := refresh(); rerr != nil {
+			return codexWhamOutcome{NeedsAuth: true, Err: fmt.Errorf("refreshing codex token: %w", rerr)}
+		}
+		data, err = fetchCodexWhamUsage(ctx, whamURL, accessToken, accountID)
+		if codexIsAuthHTTPError(err) {
+			return codexWhamOutcome{NeedsAuth: true, Err: err}
+		}
+	}
+	if err != nil {
+		return codexWhamOutcome{Err: err}
+	}
+	return codexWhamOutcome{Snapshot: codexWhamToSnapshot(data)}
 }
 
-func fetchCodexWhamUsage(ctx context.Context, token string) (map[string]any, error) {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://chatgpt.com/backend-api/wham/usage", nil)
+// codexIsAuthHTTPError reports whether err is a wham response that indicates
+// the access token itself was rejected (as opposed to a transient failure).
+func codexIsAuthHTTPError(err error) bool {
+	var httpErr *HTTPStatusError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden
+}
+
+func codexTokenExpiringSoon(token string) bool {
+	exp, ok := jwtExpiryUnix(token)
+	if !ok {
+		return false
+	}
+	return time.Now().Add(5 * time.Minute).After(time.Unix(exp, 0))
+}
+
+// readCodexAuthDoc reads auth.json into a generic map so write-back can
+// preserve fields this reader doesn't otherwise care about.
+func readCodexAuthDoc(path string) (map[string]any, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	var doc map[string]any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+func codexAuthFields(doc map[string]any) (accessToken, refreshToken, accountID string) {
+	tokens := objectAny(doc, "tokens")
+	if tokens == nil {
+		return "", "", ""
+	}
+	return firstString(tokens, "access_token"), firstString(tokens, "refresh_token"), firstString(tokens, "account_id")
+}
+
+// writeCodexAuth persists doc back to path atomically. Callers must not use
+// any token rotated into doc unless this succeeds.
+func writeCodexAuth(path string, doc map[string]any) error {
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.AtomicWriteFile(path, data, 0o600)
+}
+
+// refreshCodexAuth exchanges refreshToken for new tokens, merges the rotated
+// fields into doc (preserving every other key, including tokens.account_id),
+// and persists the result to authPath. It only returns the new access token
+// if the write-back succeeds; a consumed refresh token that isn't persisted
+// would break the user's `codex` CLI login, so on write failure it returns
+// the write-back error instead of the token.
+func refreshCodexAuth(ctx context.Context, authPath, tokenURL string, doc map[string]any, refreshToken string) (string, error) {
+	rotated, err := postCodexTokenRefresh(ctx, tokenURL, refreshToken)
+	if err != nil {
+		return "", err
+	}
+	tokens, _ := doc["tokens"].(map[string]any)
+	if tokens == nil {
+		tokens = map[string]any{}
+	}
+	for _, key := range []string{"access_token", "id_token", "refresh_token"} {
+		if v := rotated[key]; v != "" {
+			tokens[key] = v
+		}
+	}
+	doc["tokens"] = tokens
+	doc["last_refresh"] = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := writeCodexAuth(authPath, doc); err != nil {
+		return "", err
+	}
+	return firstString(tokens, "access_token"), nil
+}
+
+// postCodexTokenRefresh calls the Codex OAuth token endpoint and returns
+// whichever of id_token/access_token/refresh_token the response carried.
+func postCodexTokenRefresh(ctx context.Context, tokenURL, refreshToken string) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, codexTokenRefreshTimeout)
+	defer cancel()
+	body, err := json.Marshal(map[string]string{
+		"client_id":     codexOAuthClientID,
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
+		"scope":         "openid profile email",
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -186,7 +331,49 @@ func fetchCodexWhamUsage(ctx context.Context, token string) (map[string]any, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("wham: HTTP %s", resp.Status)
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
+	}
+	var out struct {
+		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding codex token refresh response: %w", err)
+	}
+	if strings.TrimSpace(out.AccessToken) == "" {
+		return nil, fmt.Errorf("codex token refresh: no access_token in response")
+	}
+	result := map[string]string{}
+	if out.IDToken != "" {
+		result["id_token"] = out.IDToken
+	}
+	result["access_token"] = out.AccessToken
+	if out.RefreshToken != "" {
+		result["refresh_token"] = out.RefreshToken
+	}
+	return result, nil
+}
+
+func fetchCodexWhamUsage(ctx context.Context, url, token, accountID string) (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	if accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -216,6 +403,15 @@ func codexWhamToSnapshot(data map[string]any) *readmodel.Snapshot {
 	snap := codexSnapshot(limits)
 	if snap != nil {
 		snap.Raw = map[string]any{"source": "codex-wham"}
+		if snap.Attributes == nil {
+			snap.Attributes = map[string]any{}
+		}
+		// codexSnapshot stamps codex-local by default; correct it here so
+		// diagnostics can tell live wham data from session-file fallback.
+		snap.Attributes["source"] = "codex-wham"
+		if plan := firstString(data, "plan_type", "planType"); plan != "" {
+			snap.Attributes["plan_type"] = plan
+		}
 	}
 	return snap
 }
@@ -250,7 +446,14 @@ func codexSessionFiles(root string) []codexSessionFile {
 		return nil
 	})
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].ModTime.After(out[j].ModTime)
+		if !out[i].ModTime.Equal(out[j].ModTime) {
+			return out[i].ModTime.After(out[j].ModTime)
+		}
+		// Tie-break deterministically (e.g. coarse filesystem mtime
+		// resolution, or bulk-restored files sharing one timestamp): a
+		// lexically later path corresponds to a later sessions/YYYY/MM/DD
+		// directory, so it wins.
+		return out[i].Path > out[j].Path
 	})
 	if len(out) > maxCodexSessionFiles {
 		out = out[:maxCodexSessionFiles]

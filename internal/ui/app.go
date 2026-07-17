@@ -75,14 +75,17 @@ type Options struct {
 }
 
 type App struct {
-	paths   paths.Paths
-	cfg     settings.Settings
-	log     *logging.Logger
+	paths    paths.Paths
+	cfg      settings.Settings
+	log      *logging.Logger
 	mw       *walk.MainWindow
 	surface  *walk.CustomWidget
 	notify   *walk.NotifyIcon
 	trayHide *walk.Action
 	trayShow *walk.Action
+
+	trayConnectClaude *walk.Action
+	readers           []provider.Reader
 
 	fontSmall *walk.Font
 	fontBold  *walk.Font
@@ -95,20 +98,20 @@ type App struct {
 	shutdownMu   sync.Mutex
 	shutdownDone bool
 
-	mu             sync.Mutex
-	cards          []quota.Card
-	status         string
-	visible  bool
-	appbar   bool
-	baseWork       *native.Rect
-	cardHits       []cardHit
-	gearHit        walk.Rectangle
-	pinHit         walk.Rectangle
-	statusHit      walk.Rectangle
-	lastCardHit    map[string]time.Time
-	lastMouseAt    time.Time
-	lastMousePt    walk.Point
-	revealed       bool
+	mu          sync.Mutex
+	cards       []quota.Card
+	status      string
+	visible     bool
+	appbar      bool
+	baseWork    *native.Rect
+	cardHits    []cardHit
+	gearHit     walk.Rectangle
+	pinHit      walk.Rectangle
+	statusHit   walk.Rectangle
+	lastCardHit map[string]time.Time
+	lastMouseAt time.Time
+	lastMousePt walk.Point
+	revealed    bool
 }
 
 type cardHit struct {
@@ -146,6 +149,7 @@ func Run(p paths.Paths, opts Options) error {
 	defer os.Remove(p.AppPID)
 	defer app.cleanup()
 
+	app.readers = app.buildReaders()
 	if err := app.createWindow(); err != nil {
 		return err
 	}
@@ -222,6 +226,8 @@ func (a *App) setupTray() error {
 	_ = ni.SetToolTip(appName)
 	a.trayHide = a.addTrayAction(trayHideStatus, func() { a.setStatusVisible(false) })
 	a.trayShow = a.addTrayAction(trayShowStatus, func() { a.setStatusVisible(true) })
+	a.trayConnectClaude = a.addTrayAction(trayConnectClaude, func() { a.showConnectClaudeDialog() })
+	_ = a.trayConnectClaude.SetVisible(false)
 	a.addTrayAction(traySettings, func() { a.showSettingsDialog() })
 	a.addTrayAction(trayExit, func() {
 		a.beginShutdown()
@@ -249,7 +255,7 @@ func (a *App) refreshTrayVisibilityActions() {
 }
 
 func (a *App) refreshLoop() {
-	a.refreshOnce()
+	a.refreshOnce(a.ctx)
 	for {
 		timer := time.NewTimer(time.Duration(max(5, a.cfg.RefreshSeconds)) * time.Second)
 		select {
@@ -257,16 +263,16 @@ func (a *App) refreshLoop() {
 			timer.Stop()
 			return
 		case <-timer.C:
-			a.refreshOnce()
+			a.refreshOnce(a.ctx)
 		}
 	}
 }
 
-func (a *App) refreshOnce() {
+func (a *App) refreshOnce(ctx context.Context) {
 	if !a.isVisible() {
 		return
 	}
-	model, err := provider.Aggregator{Readers: a.providerReaders(), Log: a.log}.Read(a.ctx)
+	model, err := provider.Aggregator{Readers: a.readers, Log: a.log}.Read(ctx)
 	if err != nil {
 		a.log.Printf("Refresh failed: %v", err)
 		a.setStatus(statusWaiting)
@@ -276,16 +282,29 @@ func (a *App) refreshOnce() {
 	a.mu.Lock()
 	a.cards = cards
 	a.mu.Unlock()
+	a.refreshTrayProviderActions(cards)
 	a.setStatus(statusUpdatedPrefix + time.Now().Format("15:04:05"))
 }
 
-func (a *App) providerReaders() []provider.Reader {
+// buildReaders constructs the provider readers once per process so the cache
+// wrappers keep their throttle/backoff state across refresh cycles.
+func (a *App) buildReaders() []provider.Reader {
+	quick := provider.CachePolicy{MinInterval: 60 * time.Second}
 	return []provider.Reader{
-		provider.ClaudeCodeReader{Log: a.log},
-		provider.CodexReader{Log: a.log},
-		provider.GeminiCLIReader{Log: a.log},
-		provider.CursorReader{Log: a.log},
-		provider.AntigravityReader{Log: a.log},
+		provider.WithCache(provider.ClaudeCodeReader{Log: a.log, CredStoreDir: a.paths.Credentials}, provider.CachePolicy{
+			// The usage API rate-limits per token; poll no faster than 3
+			// minutes and back off hard on 429.
+			MinInterval:   180 * time.Second,
+			BackoffLadder: []time.Duration{3 * time.Minute, 6 * time.Minute, 12 * time.Minute, 15 * time.Minute},
+			IsRateLimited: provider.IsRateLimitError,
+			SnapshotKey:   "claude-code",
+			ProviderID:    "claude_code",
+			AccountID:     "claude-code",
+		}),
+		provider.WithCache(provider.CodexReader{Log: a.log}, quick),
+		provider.WithCache(provider.GeminiCLIReader{Log: a.log}, quick),
+		provider.WithCache(provider.CursorReader{Log: a.log}, quick),
+		provider.WithCache(provider.AntigravityReader{Log: a.log}, quick),
 	}
 }
 
@@ -775,7 +794,11 @@ func (a *App) handleMouseDown(x, y int, button walk.MouseButton) {
 		last := a.lastCardHit[hit.card.SnapshotKey]
 		a.lastCardHit[hit.card.SnapshotKey] = now
 		if now.Sub(last) <= 420*time.Millisecond {
-			a.showBandPicker(hit.card)
+			if cardWantsClaudeConnect(hit.card) {
+				a.showConnectClaudeDialog()
+			} else {
+				a.showBandPicker(hit.card)
+			}
 		}
 		return
 	}
@@ -783,7 +806,9 @@ func (a *App) handleMouseDown(x, y int, button walk.MouseButton) {
 
 func (a *App) manualRefresh() {
 	a.setStatus(statusRefreshing)
-	a.refreshOnce()
+	// A manual refresh always re-fetches, bypassing the per-provider cache
+	// throttle.
+	a.refreshOnce(provider.WithForceRefresh(a.ctx))
 }
 
 func (a *App) applyDock() {
@@ -870,7 +895,7 @@ func (a *App) setStatusVisible(visible bool) {
 	if visible {
 		a.mw.Show()
 		a.applyDock()
-		a.refreshOnce()
+		a.refreshOnce(a.ctx)
 	} else {
 		a.unregisterAppBar()
 		full := native.PrimaryBounds()
@@ -1052,7 +1077,7 @@ func (a *App) showBandPicker(card quota.Card) {
 			a.log.Printf("Failed to save settings: %v", err)
 		}
 		dlg.Accept()
-		a.refreshOnce()
+		a.refreshOnce(a.ctx)
 	})
 	cancel.Clicked().Attach(func() { dlg.Cancel() })
 	_ = dlg.SetDefaultButton(save)
@@ -1070,8 +1095,8 @@ func (a *App) showSettingsDialog() {
 	original.Normalize()
 	saved := false
 	_ = dlg.SetTitle(settingsTitle)
-	_ = dlg.SetClientSize(walk.Size{Width: 660, Height: 560})
-	placeSettingsDialog(dlg, 700, 640)
+	_ = dlg.SetClientSize(walk.Size{Width: 660, Height: 700})
+	placeSettingsDialog(dlg, 700, 780)
 	root := walk.NewVBoxLayout()
 	_ = root.SetMargins(walk.Margins{HNear: 14, VNear: 14, HFar: 14, VFar: 14})
 	_ = root.SetSpacing(7)
@@ -1095,6 +1120,7 @@ func (a *App) showSettingsDialog() {
 	maxBands := number(dlg, settingsGaugeBands, float64(a.cfg.GaugeMaxBands), 1, 4)
 	warn := number(dlg, settingsGaugeWarn, float64(a.cfg.GaugeWarnPercent), 1, 100)
 	crit := number(dlg, settingsGaugeCrit, float64(a.cfg.GaugeCritPercent), 1, 100)
+	a.addProvidersControls(dlg)
 	a.addDiagnosticsControls(dlg)
 
 	buttons, _ := walk.NewComposite(dlg)
@@ -1153,7 +1179,7 @@ func (a *App) showSettingsDialog() {
 			a.applyWindowOpacity()
 		}
 		if themeChanged || dockChanged || opacityChanged || refreshChanged {
-			a.refreshOnce()
+			a.refreshOnce(a.ctx)
 		}
 	})
 	cancel.Clicked().Attach(func() { dlg.Cancel() })
@@ -1730,6 +1756,12 @@ func openFile(path string) error {
 
 func openFolder(path string) error {
 	return exec.Command("explorer.exe", path).Start()
+}
+
+// openURL opens a fixed, compile-time URL in the default browser. Never pass
+// user- or network-supplied strings here.
+func openURL(url string) error {
+	return native.OpenURL(url)
 }
 
 func addLabel(parent walk.Container, text string) {

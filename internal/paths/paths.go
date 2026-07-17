@@ -6,13 +6,14 @@ import (
 )
 
 type Paths struct {
-	Root     string
-	State    string
-	Spool    string
-	Logs     string
-	AppPID   string
-	IconDir  string
-	Settings string
+	Root        string
+	State       string
+	Spool       string
+	Logs        string
+	AppPID      string
+	IconDir     string
+	Settings    string
+	Credentials string
 }
 
 func ResolveRoot() string {
@@ -38,13 +39,14 @@ func New(root string) Paths {
 	state := filepath.Join(root, "state")
 	logs := filepath.Join(state, "logs")
 	return Paths{
-		Root:     root,
-		State:    state,
-		Spool:    filepath.Join(state, "limitdock-spool"),
-		Logs:     logs,
-		AppPID:   filepath.Join(state, "limitdock.pid"),
-		IconDir:  filepath.Join(root, "assets", "icons"),
-		Settings: filepath.Join(root, "settings.json"),
+		Root:        root,
+		State:       state,
+		Spool:       filepath.Join(state, "limitdock-spool"),
+		Logs:        logs,
+		AppPID:      filepath.Join(state, "limitdock.pid"),
+		IconDir:     filepath.Join(root, "assets", "icons"),
+		Settings:    filepath.Join(root, "settings.json"),
+		Credentials: filepath.Join(state, "credentials"),
 	}
 }
 

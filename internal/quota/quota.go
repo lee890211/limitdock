@@ -18,6 +18,7 @@ type Card struct {
 	Main           string
 	Detail         string
 	Level          string
+	Status         string
 	Bands          []Band
 	AllBands       []Band
 	Message        string
@@ -48,7 +49,7 @@ func Cards(model *readmodel.ReadModel, cfg settings.Settings) []Card {
 	out := make([]Card, 0, len(keys))
 	for _, key := range keys {
 		card := SnapshotToCard(key, model.Snapshots[key], cfg)
-		if countPercentBands(card.AllBands) > 0 {
+		if countPercentBands(card.AllBands) > 0 || readmodel.NeedsAttention(card.Status) {
 			out = append(out, card)
 		}
 	}
@@ -103,6 +104,25 @@ func SnapshotToCard(key string, snap *readmodel.Snapshot, cfg settings.Settings)
 			detailParts = append(detailParts, bands[0].Reset)
 		}
 	}
+	status := ""
+	if snap != nil {
+		status = strings.ToLower(strings.TrimSpace(snap.Status))
+	}
+	switch status {
+	case readmodel.StatusNeedsAuth:
+		level = "critical"
+		main = "Sign in"
+		detailParts = append([]string{"sign-in required"}, detailParts...)
+	case readmodel.StatusError:
+		level = "critical"
+		main = "Error"
+		detailParts = append([]string{"fetch failed"}, detailParts...)
+	case readmodel.StatusStale:
+		if level != "critical" {
+			level = "warn"
+		}
+		detailParts = append([]string{"stale"}, detailParts...)
+	}
 	if main == "Loading" && len(detailParts) == 0 {
 		detailParts = append(detailParts, "waiting for telemetry")
 	}
@@ -118,6 +138,7 @@ func SnapshotToCard(key string, snap *readmodel.Snapshot, cfg settings.Settings)
 		Main:           main,
 		Detail:         strings.Join(detailParts, " | "),
 		Level:          level,
+		Status:         status,
 		Bands:          bands,
 		AllBands:       allBands,
 		Message:        message,
@@ -293,16 +314,6 @@ func DisplayQuotaMetricKey(snap *readmodel.Snapshot, raw string) bool {
 	provider := ""
 	if snap != nil {
 		provider = strings.ToLower(strings.TrimSpace(snap.ProviderID))
-	}
-	if provider == "codex" && strings.HasPrefix(k, "rate_limit_") {
-		core := strings.TrimPrefix(k, "rate_limit_")
-		if strings.HasSuffix(core, "_primary") || strings.HasSuffix(core, "_secondary") {
-			return true
-		}
-		core = regexp.MustCompile(`_(primary|secondary)$`).ReplaceAllString(core, "")
-		if core == "primary" || core == "secondary" || core == "code_review" {
-			return true
-		}
 	}
 	if k == "plan_percent_used" {
 		return provider == "cursor"

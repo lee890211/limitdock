@@ -29,12 +29,22 @@ const (
 	cursorRESTUsageURL = "https://www.cursor.com/api/usage"
 	// Public credentials embedded in the Cursor desktop app binary.
 	cursorOAuthClientID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
-	cursorOAuthTokenURL   = "https://api2.cursor.sh/oauth/token"
+	cursorOAuthTokenURL = "https://api2.cursor.sh/oauth/token"
 )
 
 var errCursorUnauthorized = errors.New("cursor: 401 unauthorized")
 
 var cursorLogOnce sync.Map
+
+// cursorRefreshCache holds the last token we refreshed, keyed by the
+// DB-stored access token it was refreshed from. This lets repeated polls
+// within the same access-token generation reuse a refreshed token instead of
+// paying a refresh HTTP call every time.
+var cursorRefreshCache = struct {
+	sync.Mutex
+	dbToken        string
+	refreshedToken string
+}{}
 
 type CursorReader struct {
 	Log     Logger
@@ -42,32 +52,53 @@ type CursorReader struct {
 	BaseURL string // overrides API base; empty = production
 }
 
-func (r CursorReader) Name() string              { return "cursor" }
+func (r CursorReader) Name() string               { return "cursor" }
 func (r CursorReader) FallbackProviderID() string { return "cursor" }
 
 func (r CursorReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
-	token, refreshToken, accountID, err := r.resolveAuth()
+	dbToken, refreshToken, accountID, err := r.resolveAuth()
 	if err != nil {
 		logCursorOnce(r.Log, "skip", "Cursor reader skipped: %v", err)
 		return emptyReadModel(), nil
 	}
+	key := snapshotKey("cursor", accountID)
 
+	token := cursorCachedToken(dbToken)
 	if cursorTokenNeedsRefresh(token) && refreshToken != "" {
-		if newToken, rerr := refreshCursorToken(ctx, refreshToken); rerr == nil {
-			token = newToken
+		newToken, rerr := refreshCursorToken(ctx, r.BaseURL, refreshToken)
+		if rerr != nil {
+			reason := "token refresh failed: " + rerr.Error()
+			logCursorOnce(r.Log, "needs-auth", "Cursor reader needs re-auth: %s", reason)
+			return statusReadModel(key, "cursor", accountID, readmodel.StatusNeedsAuth, reason), nil
 		}
+		token = newToken
+		cursorCacheRefreshedToken(dbToken, newToken)
 	}
 
 	data, err := r.fetchUsage(ctx, token)
-	if errors.Is(err, errCursorUnauthorized) && refreshToken != "" {
-		if newToken, rerr := refreshCursorToken(ctx, refreshToken); rerr == nil {
-			token = newToken
-			data, err = r.fetchUsage(ctx, newToken)
+	if errors.Is(err, errCursorUnauthorized) {
+		if refreshToken == "" {
+			reason := "access token expired; no refresh token available"
+			logCursorOnce(r.Log, "needs-auth", "Cursor reader needs re-auth: %s", reason)
+			return statusReadModel(key, "cursor", accountID, readmodel.StatusNeedsAuth, reason), nil
+		}
+		newToken, rerr := refreshCursorToken(ctx, r.BaseURL, refreshToken)
+		if rerr != nil {
+			reason := "token refresh failed: " + rerr.Error()
+			logCursorOnce(r.Log, "needs-auth", "Cursor reader needs re-auth: %s", reason)
+			return statusReadModel(key, "cursor", accountID, readmodel.StatusNeedsAuth, reason), nil
+		}
+		cursorCacheRefreshedToken(dbToken, newToken)
+		data, err = r.fetchUsage(ctx, newToken)
+		if errors.Is(err, errCursorUnauthorized) {
+			reason := "still unauthorized after token refresh"
+			logCursorOnce(r.Log, "needs-auth", "Cursor reader needs re-auth: %s", reason)
+			return statusReadModel(key, "cursor", accountID, readmodel.StatusNeedsAuth, reason), nil
 		}
 	}
 	if err != nil {
-		logCursorOnce(r.Log, "api-err", "Cursor reader skipped: usage API unavailable: %v", err)
-		return emptyReadModel(), nil
+		logCursorOnce(r.Log, "api-err", "Cursor reader: usage API unavailable: %v", err)
+		return nil, err
 	}
 
 	snap := cursorUsageToSnapshot(data, accountID)
@@ -78,9 +109,45 @@ func (r CursorReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 	logCursorOnce(r.Log, "success", "Cursor reader captured quota rows.")
 	return &readmodel.ReadModel{
 		Snapshots: map[string]*readmodel.Snapshot{
-			snapshotKey("cursor", snap.AccountID): snap,
+			key: snap,
 		},
 	}, nil
+}
+
+// cursorCachedToken returns the cached refreshed token when dbToken (the
+// current DB-stored access token) matches the token the cache was built from
+// and that refreshed token still has more than 5 minutes of life left.
+// Otherwise it drops any stale entry and returns dbToken so the caller falls
+// back to a fresh refresh (or uses dbToken as-is if it doesn't need one).
+func cursorCachedToken(dbToken string) string {
+	cursorRefreshCache.Lock()
+	defer cursorRefreshCache.Unlock()
+	if cursorRefreshCache.dbToken != dbToken {
+		cursorRefreshCache.dbToken = ""
+		cursorRefreshCache.refreshedToken = ""
+		return dbToken
+	}
+	if cursorRefreshCache.refreshedToken == "" || cursorTokenNeedsRefresh(cursorRefreshCache.refreshedToken) {
+		return dbToken
+	}
+	return cursorRefreshCache.refreshedToken
+}
+
+// cursorCacheRefreshedToken records a freshly refreshed token, keyed by the
+// DB-stored token it was refreshed from.
+func cursorCacheRefreshedToken(dbToken, refreshedToken string) {
+	cursorRefreshCache.Lock()
+	defer cursorRefreshCache.Unlock()
+	cursorRefreshCache.dbToken = dbToken
+	cursorRefreshCache.refreshedToken = refreshedToken
+}
+
+// resetCursorRefreshCache clears the in-memory refreshed-token cache. Used by tests.
+func resetCursorRefreshCache() {
+	cursorRefreshCache.Lock()
+	defer cursorRefreshCache.Unlock()
+	cursorRefreshCache.dbToken = ""
+	cursorRefreshCache.refreshedToken = ""
 }
 
 func (r CursorReader) resolveAuth() (token, refreshToken, accountID string, err error) {
@@ -147,7 +214,7 @@ func readCursorAuth(dbPath string) (token, refreshToken, accountID string, err e
 	return token, refreshToken, accountID, nil
 }
 
-func refreshCursorToken(ctx context.Context, refreshToken string) (string, error) {
+func refreshCursorToken(ctx context.Context, baseURL, refreshToken string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, cursorTimeout)
 	defer cancel()
 	body, err := json.Marshal(map[string]string{
@@ -158,9 +225,11 @@ func refreshCursorToken(ctx context.Context, refreshToken string) (string, error
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		cursorOAuthTokenURL,
-		strings.NewReader(string(body)))
+	url := cursorOAuthTokenURL
+	if base := strings.TrimRight(baseURL, "/"); base != "" {
+		url = base + "/oauth/token"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
 	if err != nil {
 		return "", err
 	}
@@ -170,6 +239,9 @@ func refreshCursorToken(ctx context.Context, refreshToken string) (string, error
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
+	}
 	var out struct {
 		AccessToken string `json:"access_token"`
 		Error       string `json:"error"`
@@ -217,7 +289,7 @@ func (r CursorReader) fetchUsage(ctx context.Context, token string) (map[string]
 		return nil, errCursorUnauthorized
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %s", resp.Status)
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -250,7 +322,7 @@ func (r CursorReader) fetchConnectUsage(ctx context.Context, token string) (map[
 		return nil, errCursorUnauthorized
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("connect usage HTTP %s", resp.Status)
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

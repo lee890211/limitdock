@@ -62,6 +62,12 @@ Inspect the local machine for installed or running agents and verify expected so
 - Registration order is ClaudeCode → Codex → GeminiCLI → Cursor → Antigravity; duplicate snapshot keys keep the first reader.
 - Antigravity appears only when the running language server or local cache exposes quota-like rows.
 - If an installed agent is absent from the dock, inspect whether the source emitted quota-like rows before treating it as a UI bug.
+- A `needs_auth` card renders red with main text `Sign in` and no quota bands.
+- A `stale` card renders amber, keeps its last-known bands, and shows `stale` in the detail text.
+- The tray `Connect Claude...` item is visible only while the Claude card is `needs_auth`.
+- `Settings → Providers` lists all five providers with status text, plus Claude `Connect...`/`Disconnect` buttons.
+- Clicking the `Updated` panel forces a real refresh even while a provider is in its 429 backoff window.
+- In the Connect dialog: the browser opens to the Claude sign-in page, the paste field accepts the pasted code, and `Cancel` closes the dialog without connecting.
 
 ## Reporting
 
