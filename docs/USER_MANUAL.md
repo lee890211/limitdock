@@ -152,7 +152,7 @@ If Claude has no usable local credentials — no CLI login, or a token that fail
 
 1. Open the flow from the tray menu's `Connect Claude...` item (visible only while Claude needs sign-in), from `Settings → Providers → Connect...` (always available), or by double-clicking the Claude card while it shows `Sign in`.
 2. Click `1. Open Claude sign-in` to open the Claude sign-in page in your browser and approve LimitDock.
-3. Copy the code the page shows, paste it into the dialog, and click `Connect`.
+3. Copy the code the page shows. LimitDock auto-fills the field when the clipboard looks like a sign-in code (`CODE#STATE`). If it does not, click `Paste` (or press Ctrl+V) and then click `Connect`.
 
 LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`; it never modifies `~/.claude/.credentials.json` and works even if the `claude` CLI is not installed. To disconnect, open `Settings → Providers` and click `Disconnect` next to Claude — this removes only the LimitDock-stored token and does not affect a `claude` CLI login.
 

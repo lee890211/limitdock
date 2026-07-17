@@ -86,7 +86,7 @@ Right-click the tray icon:
 
 ### Connect Claude
 
-If Claude has no usable local credentials, its card shows `Sign in`. Open the Connect flow from the tray's `Connect Claude...` item (visible only while Claude needs sign-in), from `Settings → Providers` (always available), or by double-clicking the Claude card. Click through to open the Claude sign-in page in your browser, approve LimitDock, then paste the code the page shows back into the dialog. LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`, so this works even without the `claude` CLI installed. Disconnect from the same `Settings → Providers` panel.
+If Claude has no usable local credentials, its card shows `Sign in`. Open the Connect flow from the tray's `Connect Claude...` item (visible only while Claude needs sign-in), from `Settings → Providers` (always available), or by double-clicking the Claude card. Click through to open the Claude sign-in page in your browser, approve LimitDock, then copy the code the page shows — LimitDock auto-fills when it looks like a sign-in code, or use the dialog's `Paste` button / Ctrl+V. LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`, so this works even without the `claude` CLI installed. Disconnect from the same `Settings → Providers` panel.
 
 ### Docking
 

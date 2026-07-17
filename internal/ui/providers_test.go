@@ -48,14 +48,20 @@ func TestProviderStatusRowsMapsStatuses(t *testing.T) {
 	}
 }
 
-func TestCardsNeedClaudeConnect(t *testing.T) {
-	if cardsNeedClaudeConnect([]quota.Card{{ProviderID: "codex", Status: readmodel.StatusNeedsAuth}}) {
-		t.Fatal("codex needs_auth must not trigger the Claude connect entry")
+func TestLooksLikeClaudeAuthCode(t *testing.T) {
+	if !looksLikeClaudeAuthCode("abc12def#xyz89state") {
+		t.Fatal("CODE#STATE should match")
 	}
-	if !cardsNeedClaudeConnect([]quota.Card{{ProviderID: "claude_code", Status: readmodel.StatusNeedsAuth}}) {
-		t.Fatal("claude needs_auth should trigger the connect entry")
+	if !looksLikeClaudeAuthCode("abcdefghijklmnopqrstuvwxyz") {
+		t.Fatal("long bare code should match")
 	}
-	if cardsNeedClaudeConnect([]quota.Card{{ProviderID: "claude_code", Status: readmodel.StatusOK}}) {
-		t.Fatal("healthy claude must not trigger the connect entry")
+	if looksLikeClaudeAuthCode("short") {
+		t.Fatal("short bare token must not auto-fill")
+	}
+	if looksLikeClaudeAuthCode("") {
+		t.Fatal("empty must not match")
+	}
+	if looksLikeClaudeAuthCode("#onlystate") {
+		t.Fatal("missing code part must not match")
 	}
 }

@@ -23,8 +23,9 @@ const (
 	providerStatusError     = "Error"
 	connectTitle            = "Connect Claude"
 	connectOpenBrowser      = "1. Open Claude sign-in"
-	connectInstructions     = "2. Approve LimitDock in the browser.\r\n3. Copy the code the page shows (looks like abc12...#xyz89...) and paste it below."
+	connectInstructions     = "2. Approve LimitDock in the browser.\r\n3. Copy the code the page shows (looks like abc12...#xyz89...). LimitDock fills it automatically when it looks like a sign-in code; otherwise use Paste or Ctrl+V."
 	connectPasteHint        = "Paste the code here"
+	connectPasteButton      = "Paste"
 	connectButton           = "Connect"
 	connectBusy             = "Connecting..."
 	disconnectButton        = "Disconnect"
@@ -203,12 +204,58 @@ func (a *App) showConnectClaudeDialog() {
 	_ = instructions.SetReadOnly(true)
 	_ = instructions.SetText(connectInstructions)
 
-	pasteEdit, _ := walk.NewTextEdit(dlg)
-	pasteEdit.SetCompactHeight(true)
+	// LineEdit (not multiline TextEdit): the dock/dialog message loop can
+	// swallow Ctrl+V on some TextEdit setups, so we also wire an explicit
+	// Paste button and clipboard auto-fill below.
+	pasteEdit, _ := walk.NewLineEdit(dlg)
 	_ = pasteEdit.SetText("")
+	_ = pasteEdit.SetCueBanner(connectPasteHint)
+
+	pasteRow, _ := walk.NewComposite(dlg)
+	pasteLayout := leftButtonLayout(pasteRow)
+	pasteBtn, _ := walk.NewPushButton(pasteRow)
+	_ = pasteBtn.SetText(connectPasteButton)
+	addButtonSpacer(pasteRow, pasteLayout)
 
 	statusLabel, _ := walk.NewLabel(dlg)
 	_ = statusLabel.SetText(connectPasteHint)
+
+	applyClipboard := func(force bool) bool {
+		text, err := walk.Clipboard().Text()
+		if err != nil {
+			if force {
+				_ = statusLabel.SetText("Clipboard is empty or unavailable.")
+			}
+			return false
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			if force {
+				_ = statusLabel.SetText("Clipboard is empty.")
+			}
+			return false
+		}
+		if !force && !looksLikeClaudeAuthCode(text) {
+			return false
+		}
+		_ = pasteEdit.SetText(text)
+		_ = statusLabel.SetText("Code ready — click Connect.")
+		return true
+	}
+
+	pasteBtn.Clicked().Attach(func() { _ = applyClipboard(true) })
+	pasteEdit.KeyDown().Attach(func(key walk.Key) {
+		if key == walk.KeyV && walk.ModifiersDown()&walk.ModControl != 0 {
+			_ = applyClipboard(true)
+		}
+	})
+	clipboardHandler := walk.Clipboard().ContentsChanged().Attach(func() {
+		if dlg.IsDisposed() {
+			return
+		}
+		_ = applyClipboard(false)
+	})
+	defer walk.Clipboard().ContentsChanged().Detach(clipboardHandler)
 
 	openBtn.Clicked().Attach(func() {
 		if err := openURL(authorizeURL); err != nil {
@@ -217,7 +264,7 @@ func (a *App) showConnectClaudeDialog() {
 			_ = statusLabel.SetText("Could not open the browser; the sign-in URL was copied to your clipboard.")
 			return
 		}
-		_ = statusLabel.SetText("Browser opened — approve LimitDock, then paste the code below.")
+		_ = statusLabel.SetText("Browser opened — approve LimitDock, then copy the code (auto-fill / Paste / Ctrl+V).")
 	})
 
 	buttons, _ := walk.NewComposite(dlg)
@@ -230,6 +277,15 @@ func (a *App) showConnectClaudeDialog() {
 
 	connectBtn.Clicked().Attach(func() {
 		pasted := strings.TrimSpace(pasteEdit.Text())
+		if pasted == "" {
+			// Last chance: if the field is empty but the clipboard already
+			// holds a code, use it instead of forcing another paste step.
+			if !applyClipboard(false) {
+				_ = statusLabel.SetText(connectPasteHint)
+				return
+			}
+			pasted = strings.TrimSpace(pasteEdit.Text())
+		}
 		if pasted == "" {
 			_ = statusLabel.SetText(connectPasteHint)
 			return
@@ -264,5 +320,21 @@ func (a *App) showConnectClaudeDialog() {
 	_ = dlg.SetDefaultButton(connectBtn)
 	_ = dlg.SetCancelButton(cancelBtn)
 	native.FocusTopmost(uintptr(dlg.Handle()))
+	_ = pasteEdit.SetFocus()
+	_ = applyClipboard(false)
 	dlg.Run()
+}
+
+// looksLikeClaudeAuthCode reports whether clipboard text is worth auto-filling
+// into the Connect dialog. Prefer the CODE#STATE form; bare codes must be long
+// enough that random clipboard scraps are unlikely to match.
+func looksLikeClaudeAuthCode(text string) bool {
+	code, _, err := claudeauth.ParsePastedCode(text)
+	if err != nil {
+		return false
+	}
+	if strings.Contains(text, "#") {
+		return true
+	}
+	return len(code) >= 20
 }
