@@ -42,20 +42,26 @@ const (
 	settingsTheme        = "Theme"
 	settingsDisplayMode  = "Display mode"
 	settingsPosition     = "Position"
+	settingsMonitor      = "Monitor"
+	settingsMonitorAuto  = "Automatic (primary display)"
 	settingsStartup      = "Start LimitDock when Windows starts"
 	settingsAutoSlide    = "Auto slide in overlay mode"
-	settingsOpacity      = "Overlay opacity %"
+	settingsOpacity      = "Overlay opacity"
 	settingsRefresh      = "Refresh seconds"
-	settingsGaugeBands   = "Visible rows per card (max 4)"
-	settingsGaugeWarn    = "Warn when used %"
-	settingsGaugeCrit    = "Critical when used %"
-	settingsDiagnostics  = "Logs"
+	settingsGaugeBands   = "Rows per card (max 4)"
+	settingsGaugeWarn    = "Warn at used %"
+	settingsGaugeCrit    = "Critical at used %"
+	settingsSectionLook  = "Appearance"
+	settingsSectionDock  = "Docking"
+	settingsSectionQuota = "Quota display"
+	settingsSectionDiag  = "Diagnostics"
 	settingsOpenLogs     = "Logs folder"
 	settingsOpenAppLog   = "LimitDock log"
 	settingsCopyDiag     = "Copy diagnostics"
 	settingsOK           = "OK"
 	settingsSave         = "Save"
 	settingsCancel       = "Cancel"
+	settingsLabelWidth   = 150
 	glyphSettings        = "\uE713"
 	glyphPinned          = "\uE718"
 	glyphUnpinned        = "\uE77A"
@@ -68,6 +74,16 @@ const (
 	sideCardHeaderHeight = 29
 	sideCardRowHeight    = 20
 	sideCardBottomPad    = 9
+	// Hover hysteresis, in 120ms poll ticks. Reveal needs a short dwell when
+	// the docked edge borders another display (a crossing cursor should not
+	// flash the dock); hide waits one extra tick so boundary jitter cannot
+	// oscillate the dock.
+	revealDwellTicks = 2
+	hideDelayTicks   = 2
+	// Re-check the monitor topology about once a second: without it a
+	// disconnected or reconfigured dock display would leave hoverLoop
+	// working against stale rects and the dock unreachable.
+	topologyCheckTicks = 8
 )
 
 type Options struct {
@@ -114,6 +130,14 @@ type App struct {
 	lastMouseAt time.Time
 	lastMousePt walk.Point
 	revealed    bool
+
+	// Display the dock was last applied to (guarded by mu). hoverLoop and
+	// paint use these cached rects so they always agree with where applyDock
+	// actually placed the window, even if the monitor topology changes
+	// between applyDock calls.
+	dockFull         native.Rect
+	dockWork         native.Rect
+	dockEdgeInterior bool
 }
 
 type cardHit struct {
@@ -204,7 +228,9 @@ func (a *App) createWindow() error {
 	a.mw.MouseUp().Attach(a.handleMouseDown)
 	_ = layout.SetStretchFactor(a.surface, 1)
 
-	if a.cfg.DockMode == "overlay" && a.cfg.AutoHide && isSide(a.cfg.DockEdge) {
+	if a.cfg.DockMode == "overlay" && a.cfg.AutoHide {
+		// Auto-hidden overlays (any edge) start fully hidden; revealing is
+		// hoverLoop's job. Showing first would flash the bar at startup.
 		a.applyDock()
 	} else {
 		a.mw.Show()
@@ -582,8 +608,8 @@ func (a *App) paintSide(canvas *walk.Canvas, bounds walk.Rectangle, cards []quot
 }
 
 func (a *App) sideLayoutBounds(bounds walk.Rectangle) walk.Rectangle {
-	work, err := native.GetWorkArea()
-	if err == nil && bounds.Height > 0 {
+	_, work := a.dockScreen()
+	if bounds.Height > 0 {
 		return sideLayoutBoundsForWork(bounds, work.Bottom-work.Top)
 	}
 	return sideLayoutBoundsForWork(bounds, 0)
@@ -833,11 +859,7 @@ func (a *App) applyDock() {
 	}
 	a.unregisterAppBar()
 	native.SetPopupToolWindow(uintptr(a.mw.Handle()))
-	full := native.PrimaryBounds()
-	work, err := native.GetWorkArea()
-	if err != nil {
-		work = full
-	}
+	full, work := a.resolveDockScreen()
 	dockWork := dockWorkArea(a.cfg.DockMode, a.cfg.DockEdge, full, work)
 	rect := dockRect(full, dockWork, a.cfg.DockEdge, isSide(a.cfg.DockEdge), false)
 	if a.cfg.DockMode == "reserved" {
@@ -851,7 +873,7 @@ func (a *App) applyDock() {
 		if native.RegisterAppBar(uintptr(a.mw.Handle())) {
 			a.appbar = true
 			_, _ = native.SetAppBar(uintptr(a.mw.Handle()), a.cfg.DockEdge, rect)
-			if reported, err := native.GetWorkArea(); err == nil {
+			if reported, ok := native.MonitorWorkForRect(rect); ok {
 				if autoScale := appBarAutoScale(a.cfg.DockEdge, reported, rect); autoScale >= 0.5 && autoScale <= 3 && (autoScale < 0.95 || autoScale > 1.05) {
 					_, _ = native.SetAppBar(uintptr(a.mw.Handle()), a.cfg.DockEdge, native.ScaleRect(rect, autoScale))
 				}
@@ -863,25 +885,66 @@ func (a *App) applyDock() {
 		} else {
 			a.log.Printf("Reserved workarea applied edge=%s rect=(%d,%d,%d,%d) base=(%d,%d,%d,%d)", a.cfg.DockEdge, work.Left, work.Top, work.Right, work.Bottom, a.baseWork.Left, a.baseWork.Top, a.baseWork.Right, a.baseWork.Bottom)
 		}
-	} else if a.cfg.AutoHide && isSide(a.cfg.DockEdge) {
-		hidden := sideOverlayHiddenRect(full, dockWork, a.cfg.DockEdge)
-		_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(hidden.Left), Y: int(hidden.Top), Width: int(hidden.Right - hidden.Left), Height: int(hidden.Bottom - hidden.Top)})
+	} else if a.cfg.AutoHide {
+		// Auto-hidden overlays must actually hide the window: an off-screen
+		// rect is not off-screen when another display sits beyond that edge —
+		// the bar would float there, neither revealed nor hidden.
+		hidden := dockRect(full, dockWork, a.cfg.DockEdge, isSide(a.cfg.DockEdge), true)
+		_ = a.mw.SetBoundsPixels(rectangleFromRect(hidden))
 		native.SetDockBoundsHidden(uintptr(a.mw.Handle()), hidden)
 		a.applyWindowOpacity()
 		a.setRevealed(false)
 		a.invalidate()
 		return
 	}
-	hiddenHorizontal := false
-	if a.cfg.AutoHide {
-		rect = dockRect(full, dockWork, a.cfg.DockEdge, isSide(a.cfg.DockEdge), true)
-		hiddenHorizontal = true
-	}
-	_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
+	_ = a.mw.SetBoundsPixels(rectangleFromRect(rect))
 	native.SetDockBoundsVisible(uintptr(a.mw.Handle()), rect)
 	a.applyWindowOpacity()
-	a.setRevealed(!hiddenHorizontal)
+	a.setRevealed(true)
 	a.invalidate()
+}
+
+// resolveDockScreen picks the display the dock should live on (the configured
+// device if connected, otherwise the primary), caches its rects for
+// hoverLoop/paint, and returns bounds plus work area. Runs on the UI thread.
+func (a *App) resolveDockScreen() (native.Rect, native.Rect) {
+	mons := native.Monitors()
+	full, work := native.Rect{}, native.Rect{}
+	if m, ok := native.PickMonitor(mons, a.cfg.Monitor); ok {
+		full, work = m.Bounds, m.Work
+	} else {
+		full, work = primaryScreen()
+	}
+	interior := displayBeyondEdge(mons, full, a.cfg.DockEdge)
+	a.mu.Lock()
+	a.dockFull, a.dockWork, a.dockEdgeInterior = full, work, interior
+	a.mu.Unlock()
+	return full, work
+}
+
+// dockScreen returns the cached display rects from the last applyDock,
+// falling back to a live primary lookup before the first applyDock.
+func (a *App) dockScreen() (native.Rect, native.Rect) {
+	a.mu.Lock()
+	full, work := a.dockFull, a.dockWork
+	a.mu.Unlock()
+	if full.Right > full.Left && full.Bottom > full.Top {
+		return full, work
+	}
+	return primaryScreen()
+}
+
+func primaryScreen() (native.Rect, native.Rect) {
+	full := native.PrimaryBounds()
+	work, err := native.GetWorkArea()
+	if err != nil {
+		work = full
+	}
+	return full, work
+}
+
+func rectangleFromRect(r native.Rect) walk.Rectangle {
+	return walk.Rectangle{X: int(r.Left), Y: int(r.Top), Width: int(r.Right - r.Left), Height: int(r.Bottom - r.Top)}
 }
 
 func (a *App) unregisterAppBar() (native.Rect, bool) {
@@ -917,11 +980,7 @@ func (a *App) setStatusVisible(visible bool) {
 		go a.refreshOnce(a.ctx)
 	} else {
 		a.unregisterAppBar()
-		full := native.PrimaryBounds()
-		work, err := native.GetWorkArea()
-		if err != nil {
-			work = full
-		}
+		full, work := a.dockScreen()
 		rect := dockRect(full, dockWorkArea(a.cfg.DockMode, a.cfg.DockEdge, full, work), a.cfg.DockEdge, isSide(a.cfg.DockEdge), true)
 		a.mw.Hide()
 		native.SetDockBoundsHidden(uintptr(a.mw.Handle()), rect)
@@ -929,9 +988,13 @@ func (a *App) setStatusVisible(visible bool) {
 	a.refreshTrayVisibilityActions()
 }
 
-func (a *App) revealSideDock(rect native.Rect) {
+// revealDock and hideDock are the only two auto-hide transitions; both side
+// and horizontal overlays share them. Hiding uses SetDockBoundsHidden (real
+// ShowWindow hide) because the off-screen rect can land on a neighboring
+// display.
+func (a *App) revealDock(rect native.Rect) {
 	a.mw.Synchronize(func() {
-		_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
+		_ = a.mw.SetBoundsPixels(rectangleFromRect(rect))
 		a.mw.Show()
 		native.SetDockBoundsVisible(uintptr(a.mw.Handle()), rect)
 		a.applyWindowOpacity()
@@ -940,9 +1003,9 @@ func (a *App) revealSideDock(rect native.Rect) {
 	a.invalidate()
 }
 
-func (a *App) hideSideDock(rect native.Rect) {
+func (a *App) hideDock(rect native.Rect) {
 	a.mw.Synchronize(func() {
-		_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
+		_ = a.mw.SetBoundsPixels(rectangleFromRect(rect))
 		native.SetDockBoundsHidden(uintptr(a.mw.Handle()), rect)
 		a.applyWindowOpacity()
 	})
@@ -991,100 +1054,167 @@ func (a *App) setRevealed(v bool) {
 func (a *App) hoverLoop() {
 	ticker := time.NewTicker(120 * time.Millisecond)
 	defer ticker.Stop()
+	nearTicks := 0
+	outTicks := 0
+	topoTicks := 0
 	for {
 		select {
 		case <-a.ctx.Done():
 			return
 		case <-ticker.C:
-			// Copy just the three scalars this loop needs (under a.mu — the
-			// UI thread mutates a.cfg); a full snapshotCfg deep copy every
-			// 120ms tick would be wasted work.
+			// Copy just the scalars this loop needs (under a.mu — the UI
+			// thread mutates a.cfg); a full snapshotCfg deep copy every
+			// 120ms tick would be wasted work. The cached display rects keep
+			// this loop consistent with where applyDock placed the window.
 			a.mu.Lock()
-			dockMode, dockEdge, autoHide := a.cfg.DockMode, a.cfg.DockEdge, a.cfg.AutoHide
+			dockMode, dockEdge, autoHide, monitorDev := a.cfg.DockMode, a.cfg.DockEdge, a.cfg.AutoHide, a.cfg.Monitor
+			full, work, interior := a.dockFull, a.dockWork, a.dockEdgeInterior
 			a.mu.Unlock()
 			if !a.isVisible() || dockMode != "overlay" || !autoHide || a.mw == nil || a.mw.IsDisposed() {
+				nearTicks, outTicks, topoTicks = 0, 0, 0
 				continue
+			}
+			cacheValid := full.Right > full.Left && full.Bottom > full.Top
+			if topoTicks++; topoTicks >= topologyCheckTicks && cacheValid {
+				topoTicks = 0
+				if m, ok := native.PickMonitor(native.Monitors(), monitorDev); ok && (m.Bounds != full || m.Work != work) {
+					// The dock display was disconnected, swapped, or resized:
+					// re-dock on the UI thread (applyDock refreshes the cache
+					// this loop reads) instead of chasing stale rects.
+					a.mw.Synchronize(a.applyDock)
+					continue
+				}
+			}
+			if !cacheValid {
+				full, work = primaryScreen()
 			}
 			pos := native.CursorPosition()
-			full := native.PrimaryBounds()
-			work, err := native.GetWorkArea()
-			if err != nil {
-				work = full
-			}
 			dockWork := dockWorkArea(dockMode, dockEdge, full, work)
-			near := false
-			switch dockEdge {
-			case "top":
-				near = pos.Y >= dockWork.Top && pos.Y <= dockWork.Top+4
-			case "bottom":
-				near = pos.Y >= dockWork.Bottom-4 && pos.Y <= full.Bottom
-			case "left":
-				near = pos.X >= full.Left && pos.X <= full.Left+dockRevealStrip+4
-			case "right":
-				near = pos.X >= full.Right-dockRevealStrip-4 && pos.X <= full.Right
-			}
 			side := isSide(dockEdge)
-			if side {
-				rect := dockRect(full, dockWork, dockEdge, true, false)
-				hidden := sideOverlayHiddenRect(full, dockWork, dockEdge)
-				if a.isRevealed() {
-					extended := walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)}
-					if dockEdge == "right" {
-						extended.X -= 40
-						extended.Width = int(full.Right) - extended.X
-					} else {
-						extended.X = int(full.Left)
-						extended.Width = int(rect.Right) - extended.X + 40
-					}
-					if !contains(extended, walk.Point{X: int(pos.X), Y: int(pos.Y)}) {
-						a.hideSideDock(hidden)
-					}
-					continue
-				}
-				if near {
-					a.revealSideDock(rect)
-				}
-				continue
-			}
-			rect := dockRect(full, dockWork, dockEdge, false, false)
+			rect := dockRect(full, dockWork, dockEdge, side, false)
 			if a.isRevealed() {
-				extended := horizontalRevealRect(rect, dockEdge, full)
-				if contains(extended, walk.Point{X: int(pos.X), Y: int(pos.Y)}) {
+				nearTicks = 0
+				if contains(revealKeepRect(rect, dockEdge, full), walk.Point{X: int(pos.X), Y: int(pos.Y)}) {
+					outTicks = 0
 					continue
 				}
-				a.mw.Synchronize(func() {
-					hidden := dockRect(full, dockWork, dockEdge, false, true)
-					_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(hidden.Left), Y: int(hidden.Top), Width: int(hidden.Right - hidden.Left), Height: int(hidden.Bottom - hidden.Top)})
-				})
-				a.setRevealed(false)
-				native.WakeWindow(uintptr(a.mw.Handle()))
+				outTicks++
+				if outTicks < hideDelayTicks {
+					continue
+				}
+				outTicks = 0
+				a.hideDock(dockRect(full, dockWork, dockEdge, side, true))
 				continue
 			}
-			if near {
-				a.mw.Synchronize(func() {
-					_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
-				})
-				a.setRevealed(true)
-				a.invalidate()
+			outTicks = 0
+			if !nearDockEdge(pos, dockEdge, full, dockWork) {
+				nearTicks = 0
+				continue
 			}
-			native.WakeWindow(uintptr(a.mw.Handle()))
+			nearTicks++
+			need := 1
+			if interior {
+				// The edge borders another display: require a short dwell so
+				// a cursor merely crossing over does not flash the dock.
+				need = revealDwellTicks
+			}
+			if nearTicks < need {
+				continue
+			}
+			nearTicks = 0
+			a.revealDock(rect)
 		}
 	}
 }
 
-func horizontalRevealRect(rect native.Rect, edge string, full native.Rect) walk.Rectangle {
-	margin := 10
-	out := walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)}
-	out.X -= margin
-	out.Width += margin * 2
-	if edge == "top" {
+// nearDockEdge reports whether the cursor presses against the docked edge of
+// the dock display. Both axes are bounded to that display (half-open, like
+// monitor rects) so a cursor on a neighboring display can never trigger a
+// reveal — the previous unbounded zones made reveal and hide disagree and
+// oscillate the dock at the poll rate on multi-monitor layouts.
+func nearDockEdge(pos native.Point, edge string, full, work native.Rect) bool {
+	strip := dockRevealStrip + 4
+	switch edge {
+	case "top":
+		return pos.X >= work.Left && pos.X < work.Right &&
+			pos.Y >= full.Top && pos.Y <= max(work.Top+4, full.Top+strip)
+	case "bottom":
+		return pos.X >= work.Left && pos.X < work.Right &&
+			pos.Y < full.Bottom && pos.Y >= min(work.Bottom-4, full.Bottom-strip)
+	case "left":
+		return pos.Y >= work.Top && pos.Y < work.Bottom &&
+			pos.X >= full.Left && pos.X <= full.Left+strip
+	case "right":
+		return pos.Y >= work.Top && pos.Y < work.Bottom &&
+			pos.X < full.Right && pos.X >= full.Right-strip
+	}
+	return false
+}
+
+// revealKeepRect is the sticky zone the cursor may roam without the revealed
+// dock hiding. It always contains the reveal strip (hysteresis: reveal is
+// strict, keep is lenient) — if it did not, a single cursor position could
+// satisfy reveal and hide at once and flicker.
+func revealKeepRect(rect native.Rect, edge string, full native.Rect) walk.Rectangle {
+	out := rectangleFromRect(rect)
+	const sideMargin = 40
+	const margin = 10
+	switch edge {
+	case "left":
+		out.X = int(full.Left)
+		out.Width = int(rect.Right-full.Left) + sideMargin
+	case "right":
+		out.X = int(rect.Left) - sideMargin
+		out.Width = int(full.Right) - out.X
+	case "top":
+		out.X -= margin
+		out.Width += margin * 2
 		out.Y = int(full.Top)
 		out.Height = int(rect.Bottom-full.Top) + margin
-		return out
+	default:
+		out.X -= margin
+		out.Width += margin * 2
+		out.Y = int(rect.Top) - margin
+		out.Height = int(full.Bottom) - out.Y
 	}
-	out.Y -= margin
-	out.Height = int(full.Bottom) - out.Y
 	return out
+}
+
+// displayBeyondEdge reports whether another display lies immediately beyond
+// the given edge of the dock display — i.e. the edge is an interior boundary
+// the cursor can cross instead of a hard screen edge.
+func displayBeyondEdge(mons []native.Monitor, dock native.Rect, edge string) bool {
+	probe := dock
+	const depth = 2
+	switch edge {
+	case "top":
+		probe.Bottom = dock.Top
+		probe.Top = dock.Top - depth
+	case "bottom":
+		probe.Top = dock.Bottom
+		probe.Bottom = dock.Bottom + depth
+	case "left":
+		probe.Right = dock.Left
+		probe.Left = dock.Left - depth
+	case "right":
+		probe.Left = dock.Right
+		probe.Right = dock.Right + depth
+	default:
+		return false
+	}
+	for _, m := range mons {
+		if m.Bounds == dock {
+			continue
+		}
+		if rectsIntersect(m.Bounds, probe) {
+			return true
+		}
+	}
+	return false
+}
+
+func rectsIntersect(a, b native.Rect) bool {
+	return a.Left < b.Right && b.Left < a.Right && a.Top < b.Bottom && b.Top < a.Bottom
 }
 
 func (a *App) showBandPicker(card quota.Card) {
@@ -1101,7 +1231,7 @@ func (a *App) showBandPicker(card quota.Card) {
 	defer dlg.Dispose()
 	_ = dlg.SetTitle(card.Name + " visible rows")
 	_ = dlg.SetClientSize(walk.Size{Width: 420, Height: 360})
-	centerDialog(dlg, 460, 420)
+	a.centerDialog(dlg, 460, 420)
 	layout := walk.NewVBoxLayout()
 	_ = layout.SetMargins(walk.Margins{HNear: 12, VNear: 12, HFar: 12, VFar: 12})
 	_ = layout.SetSpacing(7)
@@ -1116,11 +1246,11 @@ func (a *App) showBandPicker(card quota.Card) {
 	}
 	buttons, _ := walk.NewComposite(dlg)
 	bl := leftButtonLayout(buttons)
+	addButtonSpacer(buttons, bl)
 	save, _ := walk.NewPushButton(buttons)
 	_ = save.SetText(settingsOK)
 	cancel, _ := walk.NewPushButton(buttons)
 	_ = cancel.SetText(settingsCancel)
-	addButtonSpacer(buttons, bl)
 	save.Clicked().Attach(func() {
 		// Collect widget state first, then mutate the shared hidden-band map
 		// under a.mu: the refresh goroutine iterates this map via
@@ -1162,21 +1292,28 @@ func (a *App) showSettingsDialog() {
 	original.Normalize()
 	saved := false
 	_ = dlg.SetTitle(settingsTitle)
-	_ = dlg.SetClientSize(walk.Size{Width: 660, Height: 700})
-	placeSettingsDialog(dlg, 700, 780)
+	_ = dlg.SetClientSize(walk.Size{Width: 660, Height: 720})
+	a.placeSettingsDialog(dlg, 700, 800)
 	root := walk.NewVBoxLayout()
-	_ = root.SetMargins(walk.Margins{HNear: 14, VNear: 14, HFar: 14, VFar: 14})
-	_ = root.SetSpacing(7)
+	_ = root.SetMargins(walk.Margins{HNear: 14, VNear: 14, HFar: 14, VFar: 10})
+	_ = root.SetSpacing(6)
 	_ = dlg.SetLayout(root)
 
-	addLabel(dlg, settingsTheme)
-	themePicker, _ := newThemePicker(dlg, a.cfg.Theme, a.fontSmall, a.fontBold)
-	addLabel(dlg, settingsPosition)
-	edgePicker, _ := newEdgePicker(dlg, a.cfg.DockEdge, a.fontSmall, a.fontBold)
-	mode := combo(dlg, settingsDisplayMode, []string{"reserved", "overlay"}, a.cfg.DockMode)
-	startup := checkbox(dlg, settingsStartup, native.StartupEnabled())
-	slide := checkbox(dlg, settingsAutoSlide, a.cfg.AutoHide)
-	opacity, opacityValue := slider(dlg, settingsOpacity, a.cfg.OverlayOpacity, 35, 100)
+	// Sections are plain bold labels over label+control rows: every widget
+	// here is a primitive the previous dialog already rendered correctly.
+	// (GroupBox/ScrollView nesting rendered empty at runtime with this walk
+	// build, so the dialog deliberately avoids container nesting.)
+	a.sectionHeader(dlg, settingsSectionLook)
+	themeRow, _ := settingsRow(dlg, settingsTheme)
+	themePicker, _ := newThemePicker(themeRow, a.cfg.Theme, a.fontSmall, a.fontBold)
+	opacityRow, opacityLayout := settingsRow(dlg, settingsOpacity)
+	opacity, _ := walk.NewSlider(opacityRow)
+	opacity.SetRange(35, 100)
+	opacity.SetValue(a.cfg.OverlayOpacity)
+	_ = opacityLayout.SetStretchFactor(opacity, 1)
+	opacityValue, _ := walk.NewLabel(opacityRow)
+	_ = opacityValue.SetText(fmt.Sprintf("%d%%", a.cfg.OverlayOpacity))
+	_ = opacityValue.SetMinMaxSize(walk.Size{Width: 44, Height: 0}, walk.Size{})
 	opacity.ValueChanged().Attach(func() {
 		value := opacity.Value()
 		_ = opacityValue.SetText(fmt.Sprintf("%d%%", value))
@@ -1185,25 +1322,52 @@ func (a *App) showSettingsDialog() {
 		a.mu.Unlock()
 		a.applyWindowOpacity()
 	})
-	refresh := number(dlg, settingsRefresh, float64(a.cfg.RefreshSeconds), 5, 600)
-	maxBands := number(dlg, settingsGaugeBands, float64(a.cfg.GaugeMaxBands), 1, 4)
-	warn := number(dlg, settingsGaugeWarn, float64(a.cfg.GaugeWarnPercent), 1, 100)
-	crit := number(dlg, settingsGaugeCrit, float64(a.cfg.GaugeCritPercent), 1, 100)
+
+	a.sectionHeader(dlg, settingsSectionDock)
+	mons := native.Monitors()
+	monOpts, monIdx := monitorOptions(mons, a.cfg.Monitor)
+	monitorRow, monitorLayout := settingsRow(dlg, settingsMonitor)
+	monitorCB, _ := walk.NewComboBox(monitorRow)
+	_ = monitorCB.SetModel(monitorOptionLabels(monOpts))
+	_ = monitorCB.SetCurrentIndex(monIdx)
+	_ = monitorLayout.SetStretchFactor(monitorCB, 1)
+	edgeRow, edgeLayout := settingsRow(dlg, settingsPosition)
+	edgePicker, _ := newEdgePicker(edgeRow, a.cfg.DockEdge, a.fontSmall, a.fontBold)
+	if edgePicker != nil && edgePicker.widget != nil {
+		_ = edgeLayout.SetStretchFactor(edgePicker.widget, 1)
+	}
+	mode := comboRow(dlg, settingsDisplayMode, []string{"reserved", "overlay"}, a.cfg.DockMode)
+	slide := checkbox(dlg, settingsAutoSlide, a.cfg.AutoHide)
+
+	a.sectionHeader(dlg, settingsSectionQuota)
+	quotaRow1, _ := settingsRow(dlg, "")
+	refresh := numberIn(quotaRow1, settingsRefresh, float64(a.cfg.RefreshSeconds), 5, 600)
+	maxBands := numberIn(quotaRow1, settingsGaugeBands, float64(a.cfg.GaugeMaxBands), 1, 4)
+	quotaRow2, _ := settingsRow(dlg, "")
+	warn := numberIn(quotaRow2, settingsGaugeWarn, float64(a.cfg.GaugeWarnPercent), 1, 100)
+	crit := numberIn(quotaRow2, settingsGaugeCrit, float64(a.cfg.GaugeCritPercent), 1, 100)
+
+	a.sectionHeader(dlg, settingsProviders)
 	a.addProvidersControls(dlg)
+	a.sectionHeader(dlg, settingsSectionDiag)
 	a.addDiagnosticsControls(dlg)
 
 	buttons, _ := walk.NewComposite(dlg)
 	bl := leftButtonLayout(buttons)
+	startup := checkbox(buttons, settingsStartup, native.StartupEnabled())
+	addButtonSpacer(buttons, bl)
 	save, _ := walk.NewPushButton(buttons)
 	_ = save.SetText(settingsSave)
 	cancel, _ := walk.NewPushButton(buttons)
 	_ = cancel.SetText(settingsCancel)
-	addButtonSpacer(buttons, bl)
 	save.Clicked().Attach(func() {
 		next := original
 		next.Theme = themePicker.Value()
 		next.DockEdge = edgePicker.Value()
 		next.DockMode = strings.ToLower(strings.TrimSpace(mode.Text()))
+		if i := monitorCB.CurrentIndex(); i >= 0 && i < len(monOpts) {
+			next.Monitor = monOpts[i].device
+		}
 		next.StartWithWindows = startup.Checked()
 		next.AutoHide = slide.Checked()
 		next.OverlayOpacity = opacity.Value()
@@ -1221,7 +1385,7 @@ func (a *App) showSettingsDialog() {
 		}
 
 		themeChanged := next.Theme != original.Theme
-		dockChanged := next.DockMode != original.DockMode || next.DockEdge != original.DockEdge || next.AutoHide != original.AutoHide
+		dockChanged := next.DockMode != original.DockMode || next.DockEdge != original.DockEdge || next.AutoHide != original.AutoHide || next.Monitor != original.Monitor
 		opacityChanged := next.OverlayOpacity != original.OverlayOpacity
 		refreshChanged := next.RefreshSeconds != original.RefreshSeconds ||
 			next.GaugeMaxBands != original.GaugeMaxBands ||
@@ -1262,7 +1426,7 @@ func (a *App) showSettingsDialog() {
 	dlg.Run()
 	if !saved && !reflect.DeepEqual(a.cfg, original) {
 		themeChanged := a.cfg.Theme != original.Theme
-		dockChanged := a.cfg.DockMode != original.DockMode || a.cfg.DockEdge != original.DockEdge || a.cfg.AutoHide != original.AutoHide
+		dockChanged := a.cfg.DockMode != original.DockMode || a.cfg.DockEdge != original.DockEdge || a.cfg.AutoHide != original.AutoHide || a.cfg.Monitor != original.Monitor
 		opacityChanged := a.cfg.OverlayOpacity != original.OverlayOpacity
 		a.mu.Lock()
 		a.cfg = original
@@ -1279,7 +1443,6 @@ func (a *App) showSettingsDialog() {
 }
 
 func (a *App) addDiagnosticsControls(parent walk.Container) {
-	addLabel(parent, settingsDiagnostics)
 	pathText, _ := walk.NewTextEdit(parent)
 	pathText.SetCompactHeight(true)
 	_ = pathText.SetReadOnly(true)
@@ -1441,9 +1604,46 @@ func (a *App) loadBitmap(name string) *walk.Bitmap {
 	return nil
 }
 
-func combo(parent walk.Container, label string, values []string, current string) *walk.ComboBox {
-	addLabel(parent, label)
-	cb, _ := walk.NewComboBox(parent)
+// sectionHeader renders a bold accent section title; sections stay flat
+// (direct dialog children) because nested walk containers proved unreliable
+// here, and flat primitives are what the previous dialog already used.
+func (a *App) sectionHeader(parent walk.Container, text string) {
+	l, _ := walk.NewLabel(parent)
+	if l == nil {
+		return
+	}
+	_ = l.SetText(text)
+	if a.fontBold != nil {
+		l.SetFont(a.fontBold)
+	}
+	l.SetTextColor(themeAccent)
+}
+
+// settingsRow adds one horizontal label+control row. The label column has a
+// fixed width so control edges align across rows; an empty label yields a
+// bare row for callers that add their own inline labels.
+func settingsRow(parent walk.Container, label string) (*walk.Composite, *walk.BoxLayout) {
+	row, _ := walk.NewComposite(parent)
+	layout := walk.NewHBoxLayout()
+	_ = layout.SetMargins(walk.Margins{})
+	_ = layout.SetSpacing(8)
+	_ = row.SetLayout(layout)
+	if label != "" {
+		addRowLabel(row, label)
+	}
+	return row, layout
+}
+
+func addRowLabel(parent walk.Container, text string) {
+	l, _ := walk.NewLabel(parent)
+	_ = l.SetText(text)
+	l.SetTextColor(themeMuted)
+	_ = l.SetMinMaxSize(walk.Size{Width: settingsLabelWidth, Height: 0}, walk.Size{Width: settingsLabelWidth, Height: 0})
+}
+
+func comboRow(parent walk.Container, label string, values []string, current string) *walk.ComboBox {
+	row, layout := settingsRow(parent, label)
+	cb, _ := walk.NewComboBox(row)
 	_ = cb.SetModel(values)
 	idx := 0
 	for i, v := range values {
@@ -1453,7 +1653,56 @@ func combo(parent walk.Container, label string, values []string, current string)
 		}
 	}
 	_ = cb.SetCurrentIndex(idx)
+	_ = layout.SetStretchFactor(cb, 1)
 	return cb
+}
+
+func numberIn(parent walk.Container, label string, value, min, maxv float64) *walk.NumberEdit {
+	addRowLabel(parent, label)
+	n, _ := walk.NewNumberEdit(parent)
+	_ = n.SetRange(min, maxv)
+	_ = n.SetDecimals(0)
+	_ = n.SetIncrement(1)
+	_ = n.SetValue(value)
+	return n
+}
+
+type monitorOption struct {
+	label  string
+	device string
+}
+
+// monitorOptions builds the Monitor picker entries: Automatic first, then
+// every connected display; a configured-but-disconnected device is appended
+// (selected) so the stored choice survives until the display returns.
+func monitorOptions(mons []native.Monitor, selected string) ([]monitorOption, int) {
+	opts := []monitorOption{{label: settingsMonitorAuto}}
+	for i, m := range mons {
+		label := fmt.Sprintf("Display %d — %d×%d", i+1, m.Bounds.Right-m.Bounds.Left, m.Bounds.Bottom-m.Bounds.Top)
+		if m.Primary {
+			label += " (primary)"
+		}
+		opts = append(opts, monitorOption{label: label, device: m.Device})
+	}
+	sel := strings.TrimSpace(selected)
+	if sel == "" {
+		return opts, 0
+	}
+	for i, o := range opts {
+		if o.device != "" && strings.EqualFold(o.device, sel) {
+			return opts, i
+		}
+	}
+	opts = append(opts, monitorOption{label: sel + " (not connected)", device: sel})
+	return opts, len(opts) - 1
+}
+
+func monitorOptionLabels(opts []monitorOption) []string {
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.label
+	}
+	return labels
 }
 
 type themePicker struct {
@@ -1751,35 +2000,6 @@ func checkbox(parent walk.Container, label string, checked bool) *walk.CheckBox 
 	return cb
 }
 
-func number(parent walk.Container, label string, value, min, maxv float64) *walk.NumberEdit {
-	addLabel(parent, label)
-	n, _ := walk.NewNumberEdit(parent)
-	_ = n.SetRange(min, maxv)
-	_ = n.SetDecimals(0)
-	_ = n.SetIncrement(1)
-	_ = n.SetValue(value)
-	return n
-}
-
-func slider(parent walk.Container, label string, value, min, maxv int) (*walk.Slider, *walk.Label) {
-	row, _ := walk.NewComposite(parent)
-	layout := walk.NewHBoxLayout()
-	_ = layout.SetMargins(walk.Margins{})
-	_ = layout.SetSpacing(8)
-	_ = row.SetLayout(layout)
-	l, _ := walk.NewLabel(row)
-	_ = l.SetText(label)
-	l.SetTextColor(themeMuted)
-	sl, _ := walk.NewSlider(row)
-	sl.SetRange(min, maxv)
-	sl.SetValue(value)
-	valueLabel, _ := walk.NewLabel(row)
-	_ = valueLabel.SetText(fmt.Sprintf("%d%%", value))
-	_ = valueLabel.SetMinMaxSize(walk.Size{Width: 48, Height: 0}, walk.Size{})
-	_ = layout.SetStretchFactor(sl, 1)
-	return sl, valueLabel
-}
-
 func leftButtonLayout(parent walk.Container) *walk.BoxLayout {
 	layout := walk.NewHBoxLayout()
 	_ = layout.SetMargins(walk.Margins{})
@@ -1795,22 +2015,38 @@ func addButtonSpacer(parent walk.Container, layout *walk.BoxLayout) {
 	}
 }
 
-func centerDialog(dlg *walk.Dialog, width, height int) {
-	work, err := native.GetWorkArea()
-	if err != nil {
-		full := native.PrimaryBounds()
-		work = full
-	}
-	x := int(work.Left) + max(0, int(work.Right-work.Left)-width)/2
-	y := int(work.Top) + max(0, int(work.Bottom-work.Top)-height)/2
-	_ = dlg.SetBoundsPixels(walk.Rectangle{X: x, Y: y, Width: width, Height: height})
+// centerDialog places a dialog on the display the dock lives on (where the
+// user's attention already is), clamped so it never extends past the work
+// area on small screens.
+func (a *App) centerDialog(dlg *walk.Dialog, width, height int) {
+	_, work := a.dockScreen()
+	_ = dlg.SetBoundsPixels(dialogBounds(work, width, height, -1))
 }
 
-func placeSettingsDialog(dlg *walk.Dialog, width, height int) {
-	full := native.PrimaryBounds()
-	x := int(full.Left) + max(0, int(full.Right-full.Left)-width)/2
-	y := int(full.Top) + 60
-	_ = dlg.SetBoundsPixels(walk.Rectangle{X: x, Y: y, Width: width, Height: height})
+func (a *App) placeSettingsDialog(dlg *walk.Dialog, width, height int) {
+	_, work := a.dockScreen()
+	_ = dlg.SetBoundsPixels(dialogBounds(work, width, height, 60))
+}
+
+// dialogBounds centers (width x height) horizontally in work; topOffset < 0
+// centers vertically too, otherwise the dialog sits topOffset below the work
+// area top. The rect is clamped to fit inside work.
+func dialogBounds(work native.Rect, width, height, topOffset int) walk.Rectangle {
+	workW := int(work.Right - work.Left)
+	workH := int(work.Bottom - work.Top)
+	if width > workW {
+		width = workW
+	}
+	if height > workH {
+		height = workH
+	}
+	x := int(work.Left) + max(0, workW-width)/2
+	y := int(work.Top) + max(0, workH-height)/2
+	if topOffset >= 0 {
+		y = min(int(work.Top)+topOffset, int(work.Bottom)-height)
+		y = max(y, int(work.Top))
+	}
+	return walk.Rectangle{X: x, Y: y, Width: width, Height: height}
 }
 
 func ensureFile(path string, initial string) error {
@@ -1837,12 +2073,6 @@ func openFolder(path string) error {
 // user- or network-supplied strings here.
 func openURL(url string) error {
 	return native.OpenURL(url)
-}
-
-func addLabel(parent walk.Container, text string) {
-	l, _ := walk.NewLabel(parent)
-	_ = l.SetText(text)
-	l.SetTextColor(themeMuted)
 }
 
 func dockRect(full native.Rect, work native.Rect, edge string, side bool, hidden bool) native.Rect {

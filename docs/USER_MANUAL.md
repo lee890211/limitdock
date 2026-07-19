@@ -99,9 +99,15 @@ Dock edges:
 
 Dock edge is selected with four visual screen-edge buttons in `Settings` instead of a dropdown. The order is `bottom`, `left`, `top`, `right`.
 
-Dock mode, dock edge, theme, overlay opacity, auto-slide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time. The `Theme` row uses two visual day/night buttons to switch between the `light` and `night` themes. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
+The settings window groups controls into `Appearance`, `Docking`, `Quota display`, `Providers`, and `Diagnostics` sections. Dock mode, dock edge, monitor, theme, overlay opacity, auto-slide, refresh interval, gauge thresholds, and visible row choices are persisted in local `settings.json`. Change these from `Settings` at any time. The `Theme` row uses two visual day/night buttons to switch between the `light` and `night` themes. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
 
-`Overlay opacity %` applies only in overlay mode and can be set from 35 to 100. Dragging it previews the opacity immediately. `Cancel` restores the previous opacity, and `Save` persists it.
+`Overlay opacity` applies only in overlay mode and can be set from 35 to 100. Dragging it previews the opacity immediately. `Cancel` restores the previous opacity, and `Save` persists it.
+
+### Multiple Monitors
+
+The `Monitor` row in the `Docking` section picks the display the dock lives on. `Automatic (primary display)` follows the Windows primary; selecting a specific display pins the dock — including its reserved work area in `reserved` mode — to that display. If the selected display is disconnected, LimitDock falls back to the primary display and moves back automatically once the display is reconnected. The selection is stored as the Windows display device name, so it survives restarts as long as Windows keeps the same display numbering.
+
+With `Auto slide in overlay mode`, hover detection is bounded to the dock's own display: touching the matching edge of a different monitor neither reveals nor flickers the dock, and crossing between monitors does not flash it. When the docked edge borders a neighboring display (so the cursor can cross instead of pressing a hard screen edge), revealing requires a brief (~0.2 s) hover on that edge. Settings and other LimitDock dialogs open on the dock's display.
 
 The settings window includes log and diagnostic controls. Use them to browse LimitDock logs, open `limitdock.log`, or copy diagnostic paths for troubleshooting. Antigravity path settings are intentionally absent because LimitDock auto-detects local Antigravity quota sources.
 

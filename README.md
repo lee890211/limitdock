@@ -99,7 +99,9 @@ LimitDock supports two display modes:
 
 Edges are `bottom`, `top`, `left`, and `right`. `Settings` shows them as four visual screen-edge buttons in `bottom`, `left`, `top`, `right` order instead of a dropdown so the selected dock side is easier to recognize. Docking choices are stored in local `settings.json`.
 
-The `Theme` row uses two visual day/night buttons. `Overlay opacity %` previews transparency live in overlay mode; Cancel restores the previous value and Save persists it. `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
+On multi-monitor systems, the `Monitor` picker chooses which display the dock lives on: `Automatic (primary display)` follows the Windows primary, or pin the dock to a specific display. Auto-slide hover detection is bounded to the dock's own display, so touching the same edge on another monitor neither reveals nor flickers the dock. If the selected display is disconnected, the dock falls back to the primary and moves back automatically when the display returns.
+
+`Settings` groups controls into `Appearance`, `Docking`, `Quota display`, `Providers`, and `Diagnostics` sections. The `Theme` row uses two visual day/night buttons. `Overlay opacity` previews transparency live in overlay mode; Cancel restores the previous value and Save persists it. `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`, so no administrator rights or script launcher are required. Turn the checkbox off to remove the value. `Auto slide in overlay mode` controls whether an unpinned overlay dock slides away at the selected edge.
 
 Antigravity support is quota-only and automatic. LimitDock renders a card only when it can read local percent/reset or prompt-credit quota data. It does not add an installation/status placeholder card.
 

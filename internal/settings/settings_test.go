@@ -53,6 +53,26 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMonitorRoundTripAndNormalize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	cfg := Defaults()
+	cfg.Monitor = "  \\\\.\\DISPLAY2  "
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Monitor != `\\.\DISPLAY2` {
+		t.Fatalf("monitor should round-trip trimmed, got %q", loaded.Monitor)
+	}
+	if Defaults().Monitor != "" {
+		t.Fatalf("default monitor must be automatic (empty)")
+	}
+}
+
 func TestNormalizeOverlayOpacity(t *testing.T) {
 	cfg := Defaults()
 	cfg.OverlayOpacity = 10
