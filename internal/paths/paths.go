@@ -22,12 +22,11 @@ func ResolveRoot() string {
 			return cwd
 		}
 	}
+	// The executable's directory wins even when it does not look like an app
+	// root: for an installed app it is the correct root, and it is a safer
+	// default than an arbitrary launch cwd (e.g. System32 for shortcuts).
 	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
-		if looksLikeAppRoot(dir) {
-			return dir
-		}
-		return dir
+		return filepath.Dir(exe)
 	}
 	if cwd, err := os.Getwd(); err == nil {
 		return cwd

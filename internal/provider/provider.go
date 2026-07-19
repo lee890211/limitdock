@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"limitdock/internal/claudeauth"
+	"limitdock/internal/quota"
 	"limitdock/internal/readmodel"
 )
 
@@ -92,15 +93,11 @@ func hasProviderQuota(model *readmodel.ReadModel, providerID string) bool {
 	return false
 }
 
+// isQuotaMetric shares the display layer's quota-key allowlist so fallback
+// suppression and rendering cannot drift apart; the "%" unit fallback keeps
+// percent metrics outside the known key families counting as quota here.
 func isQuotaMetric(key string, metric readmodel.Metric) bool {
-	k := strings.ToLower(strings.TrimSpace(key))
-	if k == "quota" || strings.HasPrefix(k, "quota_") || strings.HasPrefix(k, "rate_limit_") || strings.HasPrefix(k, "usage_seven_day") {
-		return true
-	}
-	if k == "usage_five_hour" || k == "plan_percent_used" || strings.HasSuffix(k, "_quota") {
-		return true
-	}
-	return metric.Unit == "%"
+	return quota.QuotaFamilyMetricKey(key) || metric.Unit == "%"
 }
 
 func mergeReadModel(dst, src *readmodel.ReadModel, source string, log Logger) {

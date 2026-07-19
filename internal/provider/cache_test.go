@@ -225,6 +225,37 @@ func TestCachePreservesFallbackInterfaceOnlyWhenPresent(t *testing.T) {
 	}
 }
 
+func TestCacheStatusOnlyModelIsNotLastGood(t *testing.T) {
+	now, clock := newFakeClock(time.Unix(1_700_000_000, 0))
+	needsAuth := statusReadModel("counting-a", "counting", "counting-a", readmodel.StatusNeedsAuth, "sign in required")
+	inner := &countingReader{model: needsAuth, err: errors.New("boom"), failAt: 2}
+	r := WithCache(inner, CachePolicy{
+		MinInterval: time.Minute,
+		SnapshotKey: "counting-a",
+		ProviderID:  "counting",
+		AccountID:   "counting-a",
+		Now:         clock,
+	})
+
+	model, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if model.Snapshots["counting-a"].Status != readmodel.StatusNeedsAuth {
+		t.Fatalf("expected needs_auth model, got %#v", model.Snapshots["counting-a"])
+	}
+
+	*now = now.Add(2 * time.Minute)
+	model, err = r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("second read: %v", err)
+	}
+	snap := model.Snapshots["counting-a"]
+	if snap == nil || snap.Status != readmodel.StatusError {
+		t.Fatalf("status-only model must not be replayed as stale last-good data, got %#v", snap)
+	}
+}
+
 func TestCacheDoesNotMutateLastGoodOnStale(t *testing.T) {
 	now, clock := newFakeClock(time.Unix(1_700_000_000, 0))
 	inner := &countingReader{model: quotaModel("counting-a"), err: errors.New("boom"), failAt: 2}

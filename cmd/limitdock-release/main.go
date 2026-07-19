@@ -119,15 +119,24 @@ func copyFile(src, dst string) error {
 	return closeErr
 }
 
-func zipDir(src, dst string) error {
+func zipDir(src, dst string) (err error) {
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-
 	zw := zip.NewWriter(out)
-	defer zw.Close()
+	// zw.Close writes the central directory and out.Close flushes it; if
+	// either fails the archive is corrupt, so their errors must surface.
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+	defer func() {
+		if cerr := zw.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	return filepath.WalkDir(src, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {

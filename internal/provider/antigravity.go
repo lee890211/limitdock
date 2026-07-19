@@ -74,6 +74,13 @@ var antigravityEndpointCache = struct {
 	items     []antigravityEndpoint
 }{}
 
+var antigravityStatusPathCache = struct {
+	sync.Mutex
+	key       string
+	expiresAt time.Time
+	paths     []string
+}{}
+
 func (r AntigravityReader) Name() string {
 	return "antigravity"
 }
@@ -214,9 +221,40 @@ type antigravityCachedStatus struct {
 }
 
 func (r AntigravityReader) cachedStatuses() []antigravityCachedStatus {
-	roots := defaultAntigravityDataDirs()
-
+	// Candidate paths are cached (the tree walk is the expensive part), but
+	// the files themselves are re-read on every call so a quota file updated
+	// while the live endpoint is down is picked up immediately.
 	out := []antigravityCachedStatus{}
+	for _, path := range antigravityStatusPaths(defaultAntigravityDataDirs()) {
+		status, err := readJSONMap(path)
+		if err != nil {
+			continue
+		}
+		var modTime time.Time
+		if fi, statErr := os.Stat(path); statErr == nil {
+			modTime = fi.ModTime()
+		}
+		out = append(out, antigravityCachedStatus{Status: status, ModTime: modTime})
+	}
+	return out
+}
+
+// antigravityStatusPaths discovers candidate status-file paths under the
+// given roots, caching the discovery walk briefly: while the live endpoint is
+// unreachable this runs on every poll, and the walk covers the whole
+// Antigravity data tree.
+func antigravityStatusPaths(roots []string) []string {
+	cacheKey := strings.ToLower(strings.Join(roots, "|"))
+	now := time.Now()
+	antigravityStatusPathCache.Lock()
+	if antigravityStatusPathCache.key == cacheKey && now.Before(antigravityStatusPathCache.expiresAt) {
+		paths := append([]string(nil), antigravityStatusPathCache.paths...)
+		antigravityStatusPathCache.Unlock()
+		return paths
+	}
+	antigravityStatusPathCache.Unlock()
+
+	out := []string{}
 	seen := map[string]bool{}
 	for _, root := range roots {
 		root = strings.TrimSpace(root)
@@ -228,18 +266,14 @@ func (r AntigravityReader) cachedStatuses() []antigravityCachedStatus {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		for _, path := range antigravityStatusCandidatePaths(root) {
-			status, err := readJSONMap(path)
-			if err != nil {
-				continue
-			}
-			var modTime time.Time
-			if fi, statErr := os.Stat(path); statErr == nil {
-				modTime = fi.ModTime()
-			}
-			out = append(out, antigravityCachedStatus{Status: status, ModTime: modTime})
-		}
+		out = append(out, antigravityStatusCandidatePaths(root)...)
 	}
+
+	antigravityStatusPathCache.Lock()
+	antigravityStatusPathCache.key = cacheKey
+	antigravityStatusPathCache.expiresAt = now.Add(5 * time.Minute)
+	antigravityStatusPathCache.paths = append([]string(nil), out...)
+	antigravityStatusPathCache.Unlock()
 	return out
 }
 
@@ -270,7 +304,12 @@ func antigravityStatusCandidatePaths(root string) []string {
 			}
 			return nil
 		}
-		if len(candidates) >= 40 || strings.ToLower(filepath.Ext(path)) != ".json" {
+		if len(candidates) >= 40 {
+			// The cap previously only stopped appending; keep walking the
+			// rest of the tree was pure waste.
+			return filepath.SkipAll
+		}
+		if strings.ToLower(filepath.Ext(path)) != ".json" {
 			return nil
 		}
 		lower := strings.ToLower(path)

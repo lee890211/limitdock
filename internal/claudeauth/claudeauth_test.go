@@ -9,12 +9,17 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"limitdock/internal/credstore"
 )
+
+func rateLimitBody() map[string]any {
+	return map[string]any{"error": map[string]any{"type": "rate_limit_error", "message": "Rate limited. Please try again later."}}
+}
 
 func clearAuthEnv(t *testing.T) {
 	t.Helper()
@@ -331,6 +336,187 @@ func TestExchangeCodePersistsTokenAndResolves(t *testing.T) {
 	tok, err := m.Resolve(context.Background())
 	if err != nil || tok.Source != "store" || tok.AccessToken != "new-access" {
 		t.Fatalf("resolve after connect: %#v err=%v", tok, err)
+	}
+}
+
+func TestRefreshRateLimitCooldownStopsFollowupPosts(t *testing.T) {
+	clearAuthEnv(t)
+	path := writeCLIFile(t, expiredOAuth())
+	ts := newTokenServer(t, http.StatusTooManyRequests, rateLimitBody(), nil)
+	now := time.Now()
+	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: ts.URL, Now: func() time.Time { return now }}
+
+	if _, err := m.Resolve(context.Background()); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected rate limited, got %v", err)
+	}
+	if ts.hits.Load() != 1 {
+		t.Fatalf("expected 1 POST, got %d", ts.hits.Load())
+	}
+
+	// While cooling down, resolves fail fast without any network call.
+	for i := 0; i < 5; i++ {
+		if _, err := m.Resolve(context.Background()); !errors.Is(err, ErrRateLimited) {
+			t.Fatalf("expected rate limited during cooldown, got %v", err)
+		}
+	}
+	if ts.hits.Load() != 1 {
+		t.Fatalf("cooldown must block POSTs, got %d", ts.hits.Load())
+	}
+
+	// Past the first cooldown rung (2m) one retry goes out; the second 429
+	// escalates to the 5m rung, which still blocks 3m later.
+	now = now.Add(2*time.Minute + time.Second)
+	m.Resolve(context.Background())
+	if ts.hits.Load() != 2 {
+		t.Fatalf("expected retry after cooldown, got %d", ts.hits.Load())
+	}
+	now = now.Add(3 * time.Minute)
+	m.Resolve(context.Background())
+	if ts.hits.Load() != 2 {
+		t.Fatalf("escalated cooldown must still block, got %d", ts.hits.Load())
+	}
+}
+
+func TestResolveStoreRateLimitSkipsCLIRefreshPost(t *testing.T) {
+	clearAuthEnv(t)
+	storeDir := t.TempDir()
+	store := credstore.New(storeDir)
+	if err := store.Save("claude", storedToken{
+		AccessToken:  "stored-old",
+		RefreshToken: "stored-refresh",
+		ExpiresAt:    time.Now().Add(-time.Minute).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	path := writeCLIFile(t, expiredOAuth())
+	ts := newTokenServer(t, http.StatusTooManyRequests, rateLimitBody(), nil)
+	m := Manager{StoreDir: storeDir, CredentialsPath: path, TokenURL: ts.URL}
+
+	_, err := m.Resolve(context.Background())
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected rate limited, got %v", err)
+	}
+	if ts.hits.Load() != 1 {
+		t.Fatalf("CLI refresh must not POST again after the store refresh hit 429, got %d", ts.hits.Load())
+	}
+}
+
+func TestExchangeCodeBypassesCooldownAndClearsIt(t *testing.T) {
+	clearAuthEnv(t)
+	storeDir := t.TempDir()
+	path := writeCLIFile(t, expiredOAuth())
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if hits.Add(1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(rateLimitBody())
+			return
+		}
+		json.NewEncoder(w).Encode(rotatedResponse())
+	}))
+	t.Cleanup(srv.Close)
+	m := Manager{StoreDir: storeDir, CredentialsPath: path, TokenURL: srv.URL}
+
+	// Arm the cooldown via a failed background refresh.
+	if _, err := m.Resolve(context.Background()); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected rate limited, got %v", err)
+	}
+	// A user-initiated exchange still goes out and succeeds.
+	ch := PKCEChallenge{Verifier: "v", Challenge: "c", State: "s"}
+	if _, err := m.ExchangeCode(context.Background(), "code#s", ch); err != nil {
+		t.Fatalf("exchange during cooldown must go through: %v", err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("expected exchange POST, got %d hits", hits.Load())
+	}
+	// The success cleared the cooldown and stored a usable token.
+	tok, err := m.Resolve(context.Background())
+	if err != nil || tok.Source != "store" || tok.AccessToken != "new-access" {
+		t.Fatalf("resolve after exchange: %#v err=%v", tok, err)
+	}
+}
+
+func TestRateLimitHonorsRetryAfterHeader(t *testing.T) {
+	clearAuthEnv(t)
+	path := writeCLIFile(t, expiredOAuth())
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(rateLimitBody())
+	}))
+	t.Cleanup(srv.Close)
+	now := time.Now()
+	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: srv.URL, Now: func() time.Time { return now }}
+
+	if _, err := m.Resolve(context.Background()); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected rate limited, got %v", err)
+	}
+	// Retry-After (10m) outranks the 2m ladder rung.
+	now = now.Add(5 * time.Minute)
+	m.Resolve(context.Background())
+	if hits.Load() != 1 {
+		t.Fatalf("Retry-After must extend the cooldown, got %d hits", hits.Load())
+	}
+	now = now.Add(6 * time.Minute)
+	m.Resolve(context.Background())
+	if hits.Load() != 2 {
+		t.Fatalf("expected retry after Retry-After elapsed, got %d hits", hits.Load())
+	}
+}
+
+func TestServerErrorDoesNotResetCooldownStrikes(t *testing.T) {
+	clearAuthEnv(t)
+	path := writeCLIFile(t, expiredOAuth())
+	var hits atomic.Int64
+	// Sequence: 429 (strike 1) → 500 (must NOT reset strikes) → 429 (strike
+	// 2 → 5m rung). If the 500 cleared the ladder, the final 429 would only
+	// arm the 2m rung and the last resolve below would POST again.
+	statuses := []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusTooManyRequests}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := int(hits.Add(1))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statuses[min(n, len(statuses))-1])
+		json.NewEncoder(w).Encode(rateLimitBody())
+	}))
+	t.Cleanup(srv.Close)
+	now := time.Now()
+	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: srv.URL, Now: func() time.Time { return now }}
+
+	m.Resolve(context.Background()) // 429 → strike 1, 2m cooldown
+	now = now.Add(2*time.Minute + time.Second)
+	m.Resolve(context.Background()) // 500 → transient error, strikes preserved
+	now = now.Add(time.Second)
+	m.Resolve(context.Background()) // 429 → strike 2, 5m rung
+	if hits.Load() != 3 {
+		t.Fatalf("setup: expected 3 POSTs, got %d", hits.Load())
+	}
+	// 3 minutes later we are inside the 5m rung; no POST may go out.
+	now = now.Add(3 * time.Minute)
+	m.Resolve(context.Background())
+	if hits.Load() != 3 {
+		t.Fatalf("500 must not reset the strike ladder: got %d POSTs", hits.Load())
+	}
+}
+
+func TestRefreshRejectionSurfacesNestedErrorDetail(t *testing.T) {
+	clearAuthEnv(t)
+	path := writeCLIFile(t, expiredOAuth())
+	ts := newTokenServer(t, http.StatusBadRequest, map[string]any{
+		"error": map[string]any{"type": "invalid_request_error", "message": "refresh token revoked"},
+	}, nil)
+	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: ts.URL}
+
+	_, err := m.Resolve(context.Background())
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected AuthError, got %v", err)
+	}
+	if !strings.Contains(authErr.Reason, "invalid_request_error") || !strings.Contains(authErr.Reason, "refresh token revoked") {
+		t.Fatalf("nested error detail missing from %q", authErr.Reason)
 	}
 }
 

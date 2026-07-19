@@ -83,7 +83,10 @@ func (c *cachedReader) Read(ctx context.Context) (*readmodel.ReadModel, error) {
 
 	if err == nil {
 		c.backoffStep = 0
-		if model != nil && len(model.Snapshots) > 0 {
+		if hasMetrics(model) {
+			// Status-only models (needs_auth/error placeholders) must not
+			// become "last good": a later transient failure would then mask
+			// the sign-in prompt behind a meaningless stale card.
 			c.lastGood = model
 		}
 		c.lastModel, c.lastErr = model, nil
@@ -127,6 +130,19 @@ func (c *cachedReader) now() time.Time {
 		return c.policy.Now()
 	}
 	return time.Now()
+}
+
+// hasMetrics reports whether any snapshot carries actual metric rows.
+func hasMetrics(model *readmodel.ReadModel) bool {
+	if model == nil {
+		return false
+	}
+	for _, snap := range model.Snapshots {
+		if snap != nil && len(snap.Metrics) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // staleCopy clones a model shallowly, flagging every snapshot as stale so the

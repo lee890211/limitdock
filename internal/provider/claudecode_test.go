@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"limitdock/internal/quota"
@@ -313,6 +314,138 @@ func TestClaudeCodeReaderMandatoryHeaders(t *testing.T) {
 }
 
 // helpers
+
+// newClaudeHybridServer serves the usage API with usageStatus and the
+// messages probe endpoint with probeStatus (attaching unified rate-limit
+// headers on 2xx).
+func newClaudeHybridServer(t *testing.T, usageStatus, probeStatus int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case claudeCodeUsagePath:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(usageStatus)
+			w.Write([]byte(`{}`))
+		case claudeMessagesPath:
+			if probeStatus < 300 {
+				w.Header().Set(claudeHeader5hUtil, "0.4")
+				w.Header().Set(claudeHeader5hReset, "1784470200")
+				w.Header().Set(claudeHeader7dUtil, "0.26")
+				w.Header().Set(claudeHeader7dReset, "1784865600")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(probeStatus)
+			w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestClaudeCodeReaderFallsBackToHeadersOnUsage429(t *testing.T) {
+	srv := newClaudeHybridServer(t, http.StatusTooManyRequests, http.StatusOK)
+	defer srv.Close()
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
+
+	model, err := ClaudeCodeReader{BaseURL: srv.URL}.Read(context.Background())
+	if err != nil {
+		t.Fatalf("header fallback should succeed: %v", err)
+	}
+	snap := model.Snapshots["claude-code"]
+	if snap == nil || snap.Status != "ok" {
+		t.Fatalf("expected ok snapshot from headers, got %#v", snap)
+	}
+	if m := snap.Metrics["usage_five_hour"]; m.Used == nil || *m.Used != 40.0 || m.Window != "5h" {
+		t.Fatalf("usage_five_hour = %#v, want Used=40 Window=5h", m)
+	}
+	if m := snap.Metrics["usage_seven_day"]; m.Used == nil || *m.Used != 26.0 {
+		t.Fatalf("usage_seven_day = %#v, want Used=26", m)
+	}
+	if rs, ok := snap.Resets["usage_five_hour_reset"].(string); !ok || !strings.HasPrefix(rs, "2026-") {
+		t.Fatalf("usage_five_hour_reset = %#v, want RFC3339 string", snap.Resets["usage_five_hour_reset"])
+	}
+	if snap.Raw["source"] != "claude-code-headers" {
+		t.Fatalf("snapshot should mark header source: %#v", snap.Raw)
+	}
+}
+
+func TestClaudeCodeReaderFallsBackToHeadersOnUsage403(t *testing.T) {
+	// user:inference-only tokens (claude setup-token) get 403 from the usage
+	// API but can still read quota via inference headers.
+	srv := newClaudeHybridServer(t, http.StatusForbidden, http.StatusOK)
+	defer srv.Close()
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "setup-token")
+
+	model, err := ClaudeCodeReader{BaseURL: srv.URL}.Read(context.Background())
+	if err != nil {
+		t.Fatalf("header fallback should succeed: %v", err)
+	}
+	snap := model.Snapshots["claude-code"]
+	if snap == nil || snap.Status != "ok" || len(snap.Metrics) != 2 {
+		t.Fatalf("expected quota snapshot for setup-token, got %#v", snap)
+	}
+}
+
+func TestClaudeCodeReaderHonorsUsageRetryAfter(t *testing.T) {
+	var usageHits, probeHits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case claudeCodeUsagePath:
+			usageHits.Add(1)
+			w.Header().Set("Retry-After", "300")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case claudeMessagesPath:
+			probeHits.Add(1)
+			w.Header().Set(claudeHeader5hUtil, "0.4")
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
+	reader := ClaudeCodeReader{BaseURL: srv.URL}
+
+	for i := 0; i < 3; i++ {
+		model, err := reader.Read(context.Background())
+		if err != nil || model.Snapshots["claude-code"] == nil {
+			t.Fatalf("read %d: %v %#v", i, err, model)
+		}
+	}
+	// The first 429 carried Retry-After: 300; later reads must skip the
+	// usage endpoint entirely and go straight to the probe.
+	if usageHits.Load() != 1 {
+		t.Fatalf("usage endpoint must not be re-hit during Retry-After, got %d hits", usageHits.Load())
+	}
+	if probeHits.Load() != 3 {
+		t.Fatalf("expected a probe per read, got %d", probeHits.Load())
+	}
+}
+
+func TestClaudeCodeReaderProbeFailureKeepsExistingBehavior(t *testing.T) {
+	// Probe also rate limited → the reader surfaces the usage 429 so the
+	// cache backoff ladder engages.
+	srv := newClaudeHybridServer(t, http.StatusTooManyRequests, http.StatusTooManyRequests)
+	defer srv.Close()
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
+
+	_, err := ClaudeCodeReader{BaseURL: srv.URL}.Read(context.Background())
+	if err == nil || !IsRateLimitError(err) {
+		t.Fatalf("expected rate-limit error, got %v", err)
+	}
+
+	// Probe fails for a 403 usage rejection → needs_auth like before.
+	srv2 := newClaudeHybridServer(t, http.StatusForbidden, http.StatusForbidden)
+	defer srv2.Close()
+	model, err := ClaudeCodeReader{BaseURL: srv2.URL}.Read(context.Background())
+	if err != nil {
+		t.Fatalf("403 path should return status model: %v", err)
+	}
+	snap := model.Snapshots["claude-code"]
+	if snap == nil || snap.Status != readmodel.StatusNeedsAuth {
+		t.Fatalf("expected needs_auth when both sources reject, got %#v", snap)
+	}
+}
 
 func newClaudeUsageServer(t *testing.T, body string) *httptest.Server {
 	t.Helper()

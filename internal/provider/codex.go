@@ -131,7 +131,16 @@ func mergeCodexSnaps(primary, secondary *readmodel.Snapshot) *readmodel.Snapshot
 		Metrics:    make(map[string]readmodel.Metric, len(primary.Metrics)+len(secondary.Metrics)),
 		Resets:     map[string]any{},
 		Raw:        primary.Raw,
-		Attributes: primary.Attributes,
+		Attributes: map[string]any{},
+	}
+	// Attributes union (primary wins): secondary carries the human-readable
+	// rate_limit_<id>_name labels for local buckets that the wham snapshot
+	// lacks; dropping them regressed captions to raw slugs.
+	for k, v := range secondary.Attributes {
+		merged.Attributes[k] = v
+	}
+	for k, v := range primary.Attributes {
+		merged.Attributes[k] = v
 	}
 	for k, v := range secondary.Metrics {
 		merged.Metrics[k] = v

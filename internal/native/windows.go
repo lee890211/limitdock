@@ -93,7 +93,7 @@ func GetWorkArea() (Rect, error) {
 }
 
 func SetWorkArea(rect Rect) error {
-	if err := setWorkAreaRaw(scaleRect(rect, shellScale())); err != nil {
+	if err := setWorkAreaRaw(ScaleRect(rect, shellScale())); err != nil {
 		return err
 	}
 	reported, err := GetWorkArea()
@@ -101,7 +101,7 @@ func SetWorkArea(rect Rect) error {
 		return nil
 	}
 	if scale := workAreaCorrectionScale(rect, reported); scale >= 0.5 && scale <= 3 && (scale < 0.95 || scale > 1.05) {
-		return setWorkAreaRaw(scaleRect(rect, scale))
+		return setWorkAreaRaw(ScaleRect(rect, scale))
 	}
 	return nil
 }
@@ -222,7 +222,7 @@ func SetAppBar(hwnd uintptr, edge string, requested Rect) (Rect, bool) {
 		HWnd:            hwnd,
 		CallbackMessage: appbarCallback,
 		Edge:            appBarEdge(edge),
-		Rect:            scaleRect(requested, scale),
+		Rect:            ScaleRect(requested, scale),
 	}
 	r1, _, _ := procSHAppBarMessage.Call(abmQueryPos, uintptr(unsafe.Pointer(&data)))
 	if r1 == 0 {
@@ -328,7 +328,9 @@ func shellScale() float64 {
 	return 1
 }
 
-func scaleRect(rect Rect, scale float64) Rect {
+// ScaleRect multiplies every rect component by scale (used for DPI
+// correction); it is the single shared implementation for native and ui.
+func ScaleRect(rect Rect, scale float64) Rect {
 	if scale <= 0 {
 		scale = 1
 	}

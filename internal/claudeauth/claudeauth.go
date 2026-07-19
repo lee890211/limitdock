@@ -17,7 +17,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"limitdock/internal/credstore"
@@ -34,14 +36,70 @@ const (
 	redirectURI     = "https://platform.claude.com/oauth/code/callback"
 	oauthScopes     = "user:profile user:inference"
 
-	// userAgent mirrors the Claude Code CLI; Anthropic rate-limits unknown
-	// clients far more aggressively.
-	userAgent = "claude-code/2.1.0"
+	// UserAgent mirrors the Claude Code CLI; Anthropic rate-limits unknown
+	// clients far more aggressively. Shared with the usage API reader.
+	UserAgent = "claude-code/2.1.0"
 
 	storeTokenName = "claude"
 	requestTimeout = 15 * time.Second
 	expirySkew     = 30 * time.Second
 )
+
+// cooldownLadder spaces out token-endpoint retries after consecutive 429s.
+// The endpoint rate-limits per IP with no Retry-After header, and a saturated
+// limit also blocks the user-initiated Connect code exchange, so background
+// refreshes must stand down long enough for the window to clear. Capped at
+// 15m (matching the provider cache backoff ceiling) so recovery is detected
+// within a practical delay.
+var cooldownLadder = []time.Duration{2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute}
+
+// tokenEndpointGate holds per-endpoint 429 cooldown state. It is process-wide
+// because Manager values are constructed fresh for every call; keying by URL
+// keeps production and test endpoints independent.
+type tokenEndpointGate struct {
+	mu      sync.Mutex
+	entries map[string]*gateEntry
+}
+
+type gateEntry struct {
+	until   time.Time
+	strikes int
+}
+
+var gate = &tokenEndpointGate{entries: map[string]*gateEntry{}}
+
+func (g *tokenEndpointGate) blockedUntil(url string, now time.Time) (time.Time, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	e := g.entries[url]
+	if e == nil || !now.Before(e.until) {
+		return time.Time{}, false
+	}
+	return e.until, true
+}
+
+func (g *tokenEndpointGate) recordRateLimit(url string, now time.Time, retryAfter time.Duration) time.Time {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	e := g.entries[url]
+	if e == nil {
+		e = &gateEntry{}
+		g.entries[url] = e
+	}
+	d := cooldownLadder[min(e.strikes, len(cooldownLadder)-1)]
+	if retryAfter > d {
+		d = retryAfter
+	}
+	e.strikes++
+	e.until = now.Add(d)
+	return e.until
+}
+
+func (g *tokenEndpointGate) clear(url string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.entries, url)
+}
 
 // ErrNoSource means no credential source exists at all; callers should stay
 // silent (provider not configured) rather than surface an auth problem.
@@ -234,11 +292,47 @@ type tokenResponse struct {
 	Account      struct {
 		EmailAddress string `json:"email_address"`
 	} `json:"account"`
-	ErrorCode string `json:"error"`
-	ErrorDesc string `json:"error_description"`
+	// The endpoint emits both OAuth-style ("error": "invalid_grant",
+	// "error_description": ...) and Anthropic-style ("error": {"type": ...,
+	// "message": ...}) failure bodies, so "error" must accept either shape.
+	ErrorRaw  json.RawMessage `json:"error"`
+	ErrorDesc string          `json:"error_description"`
+}
+
+// errorDetail flattens whichever error body shape the endpoint produced.
+func (r *tokenResponse) errorDetail() string {
+	parts := []string{}
+	if len(r.ErrorRaw) > 0 {
+		var code string
+		if json.Unmarshal(r.ErrorRaw, &code) == nil {
+			parts = append(parts, code)
+		} else {
+			var obj struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(r.ErrorRaw, &obj) == nil {
+				parts = append(parts, obj.Type, obj.Message)
+			}
+		}
+	}
+	parts = append(parts, r.ErrorDesc)
+	out := []string{}
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 func (m Manager) refresh(ctx context.Context, refreshToken string) (*tokenResponse, error) {
+	// Background refreshes must not touch a rate-limited endpoint: repeated
+	// POSTs keep the per-IP limit saturated, which also blocks the
+	// user-initiated Connect code exchange on the same endpoint.
+	if until, blocked := gate.blockedUntil(m.tokenURL(), m.now()); blocked {
+		return nil, fmt.Errorf("token endpoint cooling down until %s after HTTP 429: %w", until.Local().Format("15:04:05"), ErrRateLimited)
+	}
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
@@ -263,7 +357,7 @@ func (m Manager) postTokenForm(ctx context.Context, form url.Values) (*tokenResp
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", UserAgent)
 
 	resp, err := m.httpClient().Do(req)
 	if err != nil {
@@ -274,6 +368,23 @@ func (m Manager) postTokenForm(ctx context.Context, form url.Values) (*tokenResp
 	if err != nil {
 		return nil, fmt.Errorf("token endpoint: %w", err)
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		until := gate.recordRateLimit(m.tokenURL(), m.now(), ParseRetryAfter(resp.Header.Get("Retry-After")))
+		hint := ""
+		if ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); strings.Contains(ct, "html") {
+			// A 429 with an HTML body is an edge/bot challenge, not the
+			// endpoint's usual JSON throttle response — keep that visible.
+			hint = "; the response was an HTML page, Anthropic may be challenging this client"
+		}
+		m.logf("Claude token endpoint rate limited (HTTP 429%s); pausing token refresh until %s", hint, until.Local().Format("15:04:05"))
+		return nil, fmt.Errorf("token endpoint: HTTP %s%s: %w", resp.Status, hint, ErrRateLimited)
+	}
+	// A non-429, non-5xx response proves the rate limit is not blocking this
+	// client. A 5xx says nothing about the limiter, so it must not reset the
+	// strike ladder (alternating 429/500 would otherwise never escalate).
+	if resp.StatusCode < 500 {
+		gate.clear(m.tokenURL())
+	}
 	if ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); strings.Contains(ct, "html") {
 		return nil, fmt.Errorf("token endpoint returned an unexpected page (HTTP %d); Anthropic may be challenging this client, try again later", resp.StatusCode)
 	}
@@ -283,14 +394,11 @@ func (m Manager) postTokenForm(ctx context.Context, form url.Values) (*tokenResp
 			return nil, fmt.Errorf("token endpoint: decoding response: %w", err)
 		}
 	}
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("token endpoint: HTTP %s: %w", resp.Status, ErrRateLimited)
-	}
 	if resp.StatusCode >= 500 {
 		return nil, fmt.Errorf("token endpoint: HTTP %s", resp.Status)
 	}
 	if resp.StatusCode >= 400 {
-		detail := strings.TrimSpace(strings.Join([]string{res.ErrorCode, res.ErrorDesc}, " "))
+		detail := res.errorDetail()
 		if detail == "" {
 			detail = "HTTP " + resp.Status
 		}
@@ -300,6 +408,17 @@ func (m Manager) postTokenForm(ctx context.Context, form url.Values) (*tokenResp
 		return nil, fmt.Errorf("token endpoint: response missing access_token")
 	}
 	return &res, nil
+}
+
+// ParseRetryAfter reads a seconds-form Retry-After header; the token endpoint
+// currently sends none, so 0 (use the cooldown ladder) is the common case.
+// Exported for the usage-API reader, which receives Retry-After on 429.
+func ParseRetryAfter(header string) time.Duration {
+	secs, err := strconv.Atoi(strings.TrimSpace(header))
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func (m Manager) store() credstore.Store { return credstore.New(m.StoreDir) }
