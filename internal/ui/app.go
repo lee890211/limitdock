@@ -1604,9 +1604,17 @@ func (a *App) loadBitmap(name string) *walk.Bitmap {
 	return nil
 }
 
-// sectionHeader renders a bold accent section title; sections stay flat
-// (direct dialog children) because nested walk containers proved unreliable
-// here, and flat primitives are what the previous dialog already used.
+// Dialogs always render on the native light window background regardless of
+// the dock theme, so their text uses fixed dialog colors: night-theme accent
+// and muted colors are tuned for a dark backdrop and wash out on white.
+var (
+	dialogHeaderColor = walk.RGB(0, 99, 177)
+	dialogLabelColor  = walk.RGB(96, 96, 96)
+)
+
+// sectionHeader renders a bold section title; sections stay flat (direct
+// dialog children) because nested walk containers proved unreliable here,
+// and flat primitives are what the previous dialog already used.
 func (a *App) sectionHeader(parent walk.Container, text string) {
 	l, _ := walk.NewLabel(parent)
 	if l == nil {
@@ -1616,7 +1624,7 @@ func (a *App) sectionHeader(parent walk.Container, text string) {
 	if a.fontBold != nil {
 		l.SetFont(a.fontBold)
 	}
-	l.SetTextColor(themeAccent)
+	l.SetTextColor(dialogHeaderColor)
 }
 
 // settingsRow adds one horizontal label+control row. The label column has a
@@ -1637,7 +1645,7 @@ func settingsRow(parent walk.Container, label string) (*walk.Composite, *walk.Bo
 func addRowLabel(parent walk.Container, text string) {
 	l, _ := walk.NewLabel(parent)
 	_ = l.SetText(text)
-	l.SetTextColor(themeMuted)
+	l.SetTextColor(dialogLabelColor)
 	_ = l.SetMinMaxSize(walk.Size{Width: settingsLabelWidth, Height: 0}, walk.Size{Width: settingsLabelWidth, Height: 0})
 }
 
