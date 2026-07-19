@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"strings"
+
+	"limitdock/internal/fsutil"
 )
 
 type Settings struct {
@@ -62,7 +64,9 @@ func Save(path string, cfg Settings) error {
 		return err
 	}
 	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o644)
+	// Atomic write: a crash mid-save must not truncate settings.json, which
+	// Load would silently replace with defaults.
+	return fsutil.AtomicWriteFile(path, b, 0o644)
 }
 
 func (s *Settings) Normalize() {
