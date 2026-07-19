@@ -58,6 +58,18 @@ func Load(path string) (Settings, error) {
 }
 
 func Save(path string, cfg Settings) error {
+	// Deep-copy the band map before Normalize touches it: cfg is a value
+	// copy but shares HiddenQuotaBands with the caller, which may be read
+	// concurrently by other goroutines.
+	hidden := make(map[string]map[string]bool, len(cfg.HiddenQuotaBands))
+	for key, bands := range cfg.HiddenQuotaBands {
+		inner := make(map[string]bool, len(bands))
+		for band, v := range bands {
+			inner[band] = v
+		}
+		hidden[key] = inner
+	}
+	cfg.HiddenQuotaBands = hidden
 	cfg.Normalize()
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

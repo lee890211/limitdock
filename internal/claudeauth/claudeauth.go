@@ -369,12 +369,22 @@ func (m Manager) postTokenForm(ctx context.Context, form url.Values) (*tokenResp
 		return nil, fmt.Errorf("token endpoint: %w", err)
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		until := gate.recordRateLimit(m.tokenURL(), m.now(), parseRetryAfter(resp.Header.Get("Retry-After")))
-		m.logf("Claude token endpoint rate limited (HTTP 429); pausing token refresh until %s", until.Local().Format("15:04:05"))
-		return nil, fmt.Errorf("token endpoint: HTTP %s: %w", resp.Status, ErrRateLimited)
+		until := gate.recordRateLimit(m.tokenURL(), m.now(), ParseRetryAfter(resp.Header.Get("Retry-After")))
+		hint := ""
+		if ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); strings.Contains(ct, "html") {
+			// A 429 with an HTML body is an edge/bot challenge, not the
+			// endpoint's usual JSON throttle response — keep that visible.
+			hint = "; the response was an HTML page, Anthropic may be challenging this client"
+		}
+		m.logf("Claude token endpoint rate limited (HTTP 429%s); pausing token refresh until %s", hint, until.Local().Format("15:04:05"))
+		return nil, fmt.Errorf("token endpoint: HTTP %s%s: %w", resp.Status, hint, ErrRateLimited)
 	}
-	// Any non-429 response proves the rate limit is not blocking this client.
-	gate.clear(m.tokenURL())
+	// A non-429, non-5xx response proves the rate limit is not blocking this
+	// client. A 5xx says nothing about the limiter, so it must not reset the
+	// strike ladder (alternating 429/500 would otherwise never escalate).
+	if resp.StatusCode < 500 {
+		gate.clear(m.tokenURL())
+	}
 	if ct, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); strings.Contains(ct, "html") {
 		return nil, fmt.Errorf("token endpoint returned an unexpected page (HTTP %d); Anthropic may be challenging this client, try again later", resp.StatusCode)
 	}
@@ -400,9 +410,10 @@ func (m Manager) postTokenForm(ctx context.Context, form url.Values) (*tokenResp
 	return &res, nil
 }
 
-// parseRetryAfter reads a seconds-form Retry-After header; the endpoint
+// ParseRetryAfter reads a seconds-form Retry-After header; the token endpoint
 // currently sends none, so 0 (use the cooldown ladder) is the common case.
-func parseRetryAfter(header string) time.Duration {
+// Exported for the usage-API reader, which receives Retry-After on 429.
+func ParseRetryAfter(header string) time.Duration {
 	secs, err := strconv.Atoi(strings.TrimSpace(header))
 	if err != nil || secs <= 0 {
 		return 0

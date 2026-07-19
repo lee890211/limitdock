@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"limitdock/internal/quota"
@@ -382,6 +383,42 @@ func TestClaudeCodeReaderFallsBackToHeadersOnUsage403(t *testing.T) {
 	snap := model.Snapshots["claude-code"]
 	if snap == nil || snap.Status != "ok" || len(snap.Metrics) != 2 {
 		t.Fatalf("expected quota snapshot for setup-token, got %#v", snap)
+	}
+}
+
+func TestClaudeCodeReaderHonorsUsageRetryAfter(t *testing.T) {
+	var usageHits, probeHits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case claudeCodeUsagePath:
+			usageHits.Add(1)
+			w.Header().Set("Retry-After", "300")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case claudeMessagesPath:
+			probeHits.Add(1)
+			w.Header().Set(claudeHeader5hUtil, "0.4")
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
+	reader := ClaudeCodeReader{BaseURL: srv.URL}
+
+	for i := 0; i < 3; i++ {
+		model, err := reader.Read(context.Background())
+		if err != nil || model.Snapshots["claude-code"] == nil {
+			t.Fatalf("read %d: %v %#v", i, err, model)
+		}
+	}
+	// The first 429 carried Retry-After: 300; later reads must skip the
+	// usage endpoint entirely and go straight to the probe.
+	if usageHits.Load() != 1 {
+		t.Fatalf("usage endpoint must not be re-hit during Retry-After, got %d hits", usageHits.Load())
+	}
+	if probeHits.Load() != 3 {
+		t.Fatalf("expected a probe per read, got %d", probeHits.Load())
 	}
 }
 

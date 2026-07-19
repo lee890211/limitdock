@@ -468,6 +468,40 @@ func TestRateLimitHonorsRetryAfterHeader(t *testing.T) {
 	}
 }
 
+func TestServerErrorDoesNotResetCooldownStrikes(t *testing.T) {
+	clearAuthEnv(t)
+	path := writeCLIFile(t, expiredOAuth())
+	var hits atomic.Int64
+	// Sequence: 429 (strike 1) → 500 (must NOT reset strikes) → 429 (strike
+	// 2 → 5m rung). If the 500 cleared the ladder, the final 429 would only
+	// arm the 2m rung and the last resolve below would POST again.
+	statuses := []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusTooManyRequests}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := int(hits.Add(1))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statuses[min(n, len(statuses))-1])
+		json.NewEncoder(w).Encode(rateLimitBody())
+	}))
+	t.Cleanup(srv.Close)
+	now := time.Now()
+	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: srv.URL, Now: func() time.Time { return now }}
+
+	m.Resolve(context.Background()) // 429 → strike 1, 2m cooldown
+	now = now.Add(2*time.Minute + time.Second)
+	m.Resolve(context.Background()) // 500 → transient error, strikes preserved
+	now = now.Add(time.Second)
+	m.Resolve(context.Background()) // 429 → strike 2, 5m rung
+	if hits.Load() != 3 {
+		t.Fatalf("setup: expected 3 POSTs, got %d", hits.Load())
+	}
+	// 3 minutes later we are inside the 5m rung; no POST may go out.
+	now = now.Add(3 * time.Minute)
+	m.Resolve(context.Background())
+	if hits.Load() != 3 {
+		t.Fatalf("500 must not reset the strike ladder: got %d POSTs", hits.Load())
+	}
+}
+
 func TestRefreshRejectionSurfacesNestedErrorDetail(t *testing.T) {
 	clearAuthEnv(t)
 	path := writeCLIFile(t, expiredOAuth())

@@ -100,6 +100,8 @@ type App struct {
 
 	mu          sync.Mutex
 	cards       []quota.Card
+	readSeq     uint64
+	appliedSeq  uint64
 	status      string
 	visible     bool
 	appbar      bool
@@ -272,6 +274,13 @@ func (a *App) refreshOnce(ctx context.Context) {
 	if !a.isVisible() {
 		return
 	}
+	// Concurrent refreshes (timer, manual, post-save) may finish out of
+	// order; the sequence guard keeps a slower, earlier-started refresh from
+	// overwriting cards computed from newer config.
+	a.mu.Lock()
+	a.readSeq++
+	seq := a.readSeq
+	a.mu.Unlock()
 	model, err := provider.Aggregator{Readers: a.readers, Log: a.log}.Read(ctx)
 	if err != nil {
 		a.log.Printf("Refresh failed: %v", err)
@@ -280,6 +289,11 @@ func (a *App) refreshOnce(ctx context.Context) {
 	}
 	cards := quota.Cards(model, a.snapshotCfg())
 	a.mu.Lock()
+	if seq < a.appliedSeq {
+		a.mu.Unlock()
+		return
+	}
+	a.appliedSeq = seq
 	a.cards = cards
 	a.mu.Unlock()
 	a.refreshTrayProviderActions(cards)
@@ -982,10 +996,13 @@ func (a *App) hoverLoop() {
 		case <-a.ctx.Done():
 			return
 		case <-ticker.C:
-			// Snapshot the config once per tick: this loop runs off the UI
-			// thread while the UI thread mutates a.cfg.
-			cfg := a.snapshotCfg()
-			if !a.isVisible() || cfg.DockMode != "overlay" || !cfg.AutoHide || a.mw == nil || a.mw.IsDisposed() {
+			// Copy just the three scalars this loop needs (under a.mu — the
+			// UI thread mutates a.cfg); a full snapshotCfg deep copy every
+			// 120ms tick would be wasted work.
+			a.mu.Lock()
+			dockMode, dockEdge, autoHide := a.cfg.DockMode, a.cfg.DockEdge, a.cfg.AutoHide
+			a.mu.Unlock()
+			if !a.isVisible() || dockMode != "overlay" || !autoHide || a.mw == nil || a.mw.IsDisposed() {
 				continue
 			}
 			pos := native.CursorPosition()
@@ -994,9 +1011,9 @@ func (a *App) hoverLoop() {
 			if err != nil {
 				work = full
 			}
-			dockWork := dockWorkArea(cfg.DockMode, cfg.DockEdge, full, work)
+			dockWork := dockWorkArea(dockMode, dockEdge, full, work)
 			near := false
-			switch cfg.DockEdge {
+			switch dockEdge {
 			case "top":
 				near = pos.Y >= dockWork.Top && pos.Y <= dockWork.Top+4
 			case "bottom":
@@ -1006,13 +1023,13 @@ func (a *App) hoverLoop() {
 			case "right":
 				near = pos.X >= full.Right-dockRevealStrip-4 && pos.X <= full.Right
 			}
-			side := isSide(cfg.DockEdge)
+			side := isSide(dockEdge)
 			if side {
-				rect := dockRect(full, dockWork, cfg.DockEdge, true, false)
-				hidden := sideOverlayHiddenRect(full, dockWork, cfg.DockEdge)
+				rect := dockRect(full, dockWork, dockEdge, true, false)
+				hidden := sideOverlayHiddenRect(full, dockWork, dockEdge)
 				if a.isRevealed() {
 					extended := walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)}
-					if cfg.DockEdge == "right" {
+					if dockEdge == "right" {
 						extended.X -= 40
 						extended.Width = int(full.Right) - extended.X
 					} else {
@@ -1029,14 +1046,14 @@ func (a *App) hoverLoop() {
 				}
 				continue
 			}
-			rect := dockRect(full, dockWork, cfg.DockEdge, false, false)
+			rect := dockRect(full, dockWork, dockEdge, false, false)
 			if a.isRevealed() {
-				extended := horizontalRevealRect(rect, cfg.DockEdge, full)
+				extended := horizontalRevealRect(rect, dockEdge, full)
 				if contains(extended, walk.Point{X: int(pos.X), Y: int(pos.Y)}) {
 					continue
 				}
 				a.mw.Synchronize(func() {
-					hidden := dockRect(full, dockWork, cfg.DockEdge, false, true)
+					hidden := dockRect(full, dockWork, dockEdge, false, true)
 					_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(hidden.Left), Y: int(hidden.Top), Width: int(hidden.Right - hidden.Left), Height: int(hidden.Bottom - hidden.Top)})
 				})
 				a.setRevealed(false)

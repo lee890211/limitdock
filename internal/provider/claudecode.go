@@ -9,11 +9,36 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"limitdock/internal/claudeauth"
 	"limitdock/internal/readmodel"
 )
+
+// claudeUsageCooldown remembers, per API base, the Retry-After window from a
+// usage-API 429 so subsequent polls skip straight to the header probe instead
+// of re-hitting an endpoint that already told us to wait.
+var claudeUsageCooldown = struct {
+	sync.Mutex
+	until map[string]time.Time
+}{until: map[string]time.Time{}}
+
+func claudeUsageCoolingDown(base string, now time.Time) bool {
+	claudeUsageCooldown.Lock()
+	defer claudeUsageCooldown.Unlock()
+	return now.Before(claudeUsageCooldown.until[base])
+}
+
+func markClaudeUsageCooldown(base string, retryAfter time.Duration, now time.Time) {
+	if retryAfter <= 0 {
+		// Measured live 2026-07-19: the endpoint locks for 5 minutes.
+		retryAfter = 5 * time.Minute
+	}
+	claudeUsageCooldown.Lock()
+	claudeUsageCooldown.until[base] = now.Add(retryAfter)
+	claudeUsageCooldown.Unlock()
+}
 
 const (
 	claudeCodeAPIBase    = "https://api.anthropic.com"
@@ -97,7 +122,12 @@ func (r ClaudeCodeReader) Read(ctx context.Context) (*readmodel.ReadModel, error
 		return nil, fmt.Errorf("claude auth: %w", err)
 	}
 
-	usage, err := r.fetchUsage(ctx, tok.AccessToken)
+	var usage *claudeUsageResponse
+	if claudeUsageCoolingDown(r.apiBase(), time.Now()) {
+		err = &HTTPStatusError{StatusCode: http.StatusTooManyRequests, Status: "429 usage API cooling down (Retry-After)"}
+	} else {
+		usage, err = r.fetchUsage(ctx, tok.AccessToken)
+	}
 	if err != nil {
 		var httpErr *HTTPStatusError
 		if errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode == http.StatusForbidden) {
@@ -135,15 +165,18 @@ func (r ClaudeCodeReader) Read(ctx context.Context) (*readmodel.ReadModel, error
 	}, nil
 }
 
+func (r ClaudeCodeReader) apiBase() string {
+	if r.BaseURL != "" {
+		return r.BaseURL
+	}
+	return claudeCodeAPIBase
+}
+
 func (r ClaudeCodeReader) fetchUsage(ctx context.Context, token string) (*claudeUsageResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, claudeCodeTimeout)
 	defer cancel()
 
-	base := r.BaseURL
-	if base == "" {
-		base = claudeCodeAPIBase
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+claudeCodeUsagePath, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.apiBase()+claudeCodeUsagePath, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +192,9 @@ func (r ClaudeCodeReader) fetchUsage(ctx context.Context, token string) (*claude
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			markClaudeUsageCooldown(r.apiBase(), claudeauth.ParseRetryAfter(resp.Header.Get("Retry-After")), time.Now())
+		}
 		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	var usage claudeUsageResponse
@@ -192,13 +228,9 @@ func (r ClaudeCodeReader) fetchHeaderQuota(ctx context.Context, token string) (*
 	ctx, cancel := context.WithTimeout(ctx, claudeCodeTimeout)
 	defer cancel()
 
-	base := r.BaseURL
-	if base == "" {
-		base = claudeCodeAPIBase
-	}
 	body := fmt.Sprintf(`{"model":%q,"max_tokens":1,"system":%q,"messages":[{"role":"user","content":"."}]}`,
 		claudeProbeModel, claudeProbeSystem)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+claudeMessagesPath, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.apiBase()+claudeMessagesPath, strings.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
