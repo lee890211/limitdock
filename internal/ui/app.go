@@ -780,7 +780,7 @@ func (a *App) handleMouseDown(x, y int, button walk.MouseButton) {
 		a.mu.Lock()
 		a.cfg.AutoHide = !a.cfg.AutoHide
 		a.mu.Unlock()
-		_ = settings.Save(a.paths.Settings, a.cfg)
+		_ = settings.Save(a.paths.Settings, a.snapshotCfg())
 		a.applyDock()
 		a.invalidate()
 		return
@@ -831,7 +831,7 @@ func (a *App) applyDock() {
 			a.mu.Lock()
 			a.cfg.AutoHide = false
 			a.mu.Unlock()
-			_ = settings.Save(a.paths.Settings, a.cfg)
+			_ = settings.Save(a.paths.Settings, a.snapshotCfg())
 		}
 		a.baseWork = &work
 		if native.RegisterAppBar(uintptr(a.mw.Handle())) {
@@ -1123,7 +1123,7 @@ func (a *App) showBandPicker(card quota.Card) {
 			next[key] = true
 		}
 		a.mu.Unlock()
-		if err := settings.Save(a.paths.Settings, a.cfg); err != nil {
+		if err := settings.Save(a.paths.Settings, a.snapshotCfg()); err != nil {
 			a.log.Printf("Failed to save settings: %v", err)
 		}
 		dlg.Accept()
@@ -1214,7 +1214,7 @@ func (a *App) showSettingsDialog() {
 		a.mu.Lock()
 		a.cfg = next
 		a.mu.Unlock()
-		if err := settings.Save(a.paths.Settings, a.cfg); err != nil {
+		if err := settings.Save(a.paths.Settings, a.snapshotCfg()); err != nil {
 			a.mu.Lock()
 			a.cfg = original
 			a.mu.Unlock()
