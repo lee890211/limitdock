@@ -78,8 +78,8 @@ func OpenURL(url string) error {
 }
 
 func PrimaryBounds() Rect {
-	w := callInt(user32.NewProc("GetSystemMetrics"), 0)
-	h := callInt(user32.NewProc("GetSystemMetrics"), 1)
+	w := callInt(procGetSystemMetrics, smCxScreen)
+	h := callInt(procGetSystemMetrics, smCyScreen)
 	return Rect{Right: int32(w), Bottom: int32(h)}
 }
 
@@ -96,9 +96,15 @@ func SetWorkArea(rect Rect) error {
 	if err := setWorkAreaRaw(ScaleRect(rect, shellScale())); err != nil {
 		return err
 	}
-	reported, err := GetWorkArea()
-	if err != nil {
-		return nil
+	// Verify against the work area of the display the rect belongs to;
+	// SPI_GETWORKAREA only reports the primary display and would produce a
+	// bogus correction scale for docks on a secondary monitor.
+	reported, ok := MonitorWorkForRect(rect)
+	if !ok {
+		var err error
+		if reported, err = GetWorkArea(); err != nil {
+			return nil
+		}
 	}
 	if scale := workAreaCorrectionScale(rect, reported); scale >= 0.5 && scale <= 3 && (scale < 0.95 || scale > 1.05) {
 		return setWorkAreaRaw(ScaleRect(rect, scale))
@@ -426,7 +432,11 @@ var (
 	procSetForegroundWindow        = user32.NewProc("SetForegroundWindow")
 	procPostMessage                = user32.NewProc("PostMessageW")
 	procShowWindow                 = user32.NewProc("ShowWindow")
+	procGetSystemMetrics           = user32.NewProc("GetSystemMetrics")
 	procMonitorFromPoint           = user32.NewProc("MonitorFromPoint")
+	procMonitorFromRect            = user32.NewProc("MonitorFromRect")
+	procEnumDisplayMonitors        = user32.NewProc("EnumDisplayMonitors")
+	procGetMonitorInfo             = user32.NewProc("GetMonitorInfoW")
 	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
 	procSHAppBarMessage            = shell32.NewProc("SHAppBarMessage")
 	procShellExecute               = shell32.NewProc("ShellExecuteW")
@@ -477,7 +487,12 @@ const (
 	abeRight  = 2
 	abeBottom = 3
 
+	smCxScreen = 0
+	smCyScreen = 1
+
 	monitorDefaultToPrimary = 1
+	monitorDefaultToNearest = 2
+	monitorInfoPrimary      = 0x1
 	appbarCallback          = 0x8001
 	startupRunKey           = `Software\Microsoft\Windows\CurrentVersion\Run`
 	startupRunName          = "LimitDock"

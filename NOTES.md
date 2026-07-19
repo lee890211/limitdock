@@ -14,7 +14,7 @@ Current architecture:
 - Snapshot status (`ok`/`needs_auth`/`stale`/`error`) drives card presentation; a provider with no local credentials still shows nothing.
 - Background polling is throttled per provider (Claude Code 180s plus backoff, others 60s); a manual `Updated` click always forces a fetch.
 - Normalize quota-like rows into compact provider cards.
-- Render top, bottom, left, or right docks in overlay or reserved mode.
+- Render top, bottom, left, or right docks in overlay or reserved mode, on the primary or a user-selected display; auto-hide hover zones are bounded to the dock's display.
 
 Current product rules:
 

@@ -129,7 +129,6 @@ func (a *App) refreshTrayProviderActions(cards []quota.Card) {
 // dialog. Claude always offers Connect (and Disconnect while a LimitDock
 // token exists) so a user without any CLI login can still sign in.
 func (a *App) addProvidersControls(parent walk.Container) {
-	addLabel(parent, settingsProviders)
 	rows := providerStatusRows(a.currentCards())
 	connectedEmail, connected := a.claudeAuthManager().StoredAccountEmail()
 	for _, row := range rows {
@@ -189,7 +188,7 @@ func (a *App) showConnectClaudeDialog() {
 	defer dlg.Dispose()
 	_ = dlg.SetTitle(connectTitle)
 	_ = dlg.SetClientSize(walk.Size{Width: 520, Height: 300})
-	centerDialog(dlg, 560, 360)
+	a.centerDialog(dlg, 560, 360)
 	layout := walk.NewVBoxLayout()
 	_ = layout.SetMargins(walk.Margins{HNear: 14, VNear: 14, HFar: 14, VFar: 14})
 	_ = layout.SetSpacing(8)
@@ -271,11 +270,11 @@ func (a *App) showConnectClaudeDialog() {
 
 	buttons, _ := walk.NewComposite(dlg)
 	bl := leftButtonLayout(buttons)
+	addButtonSpacer(buttons, bl)
 	connectBtn, _ := walk.NewPushButton(buttons)
 	_ = connectBtn.SetText(connectButton)
 	cancelBtn, _ := walk.NewPushButton(buttons)
 	_ = cancelBtn.SetText(settingsCancel)
-	addButtonSpacer(buttons, bl)
 
 	connectBtn.Clicked().Attach(func() {
 		pasted := strings.TrimSpace(pasteEdit.Text())

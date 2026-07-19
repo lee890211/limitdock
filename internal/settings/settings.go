@@ -14,6 +14,7 @@ type Settings struct {
 	AutoHide         bool                       `json:"autoHide"`
 	DockMode         string                     `json:"dockMode"`
 	DockEdge         string                     `json:"dockEdge"`
+	Monitor          string                     `json:"monitor"`
 	Theme            string                     `json:"theme"`
 	OverlayOpacity   int                        `json:"overlayOpacity"`
 	StartWithWindows bool                       `json:"startWithWindows"`
@@ -29,6 +30,7 @@ func Defaults() Settings {
 		AutoHide:         false,
 		DockMode:         "reserved",
 		DockEdge:         "bottom",
+		Monitor:          "",
 		Theme:            "light",
 		OverlayOpacity:   100,
 		StartWithWindows: false,
@@ -93,6 +95,11 @@ func (s *Settings) Normalize() {
 	default:
 		s.DockEdge = d.DockEdge
 	}
+	// Monitor is a display device name (e.g. \\.\DISPLAY2); empty means
+	// "follow the primary display". Unknown names are kept: the display may
+	// simply be disconnected right now, and the dock falls back to primary
+	// until it returns.
+	s.Monitor = strings.TrimSpace(s.Monitor)
 	s.Theme = strings.ToLower(strings.TrimSpace(s.Theme))
 	switch s.Theme {
 	case "light", "night":
