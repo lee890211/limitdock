@@ -48,8 +48,10 @@ const (
 // cooldownLadder spaces out token-endpoint retries after consecutive 429s.
 // The endpoint rate-limits per IP with no Retry-After header, and a saturated
 // limit also blocks the user-initiated Connect code exchange, so background
-// refreshes must stand down long enough for the window to clear.
-var cooldownLadder = []time.Duration{2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 20 * time.Minute, 30 * time.Minute}
+// refreshes must stand down long enough for the window to clear. Capped at
+// 15m (matching the provider cache backoff ceiling) so recovery is detected
+// within a practical delay.
+var cooldownLadder = []time.Duration{2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute}
 
 // tokenEndpointGate holds per-endpoint 429 cooldown state. It is process-wide
 // because Manager values are constructed fresh for every call; keying by URL
