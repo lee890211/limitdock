@@ -257,7 +257,7 @@ func (a *App) refreshTrayVisibilityActions() {
 func (a *App) refreshLoop() {
 	a.refreshOnce(a.ctx)
 	for {
-		timer := time.NewTimer(time.Duration(max(5, a.cfg.RefreshSeconds)) * time.Second)
+		timer := time.NewTimer(time.Duration(max(5, a.snapshotCfg().RefreshSeconds)) * time.Second)
 		select {
 		case <-a.ctx.Done():
 			timer.Stop()
@@ -278,7 +278,7 @@ func (a *App) refreshOnce(ctx context.Context) {
 		a.setStatus(statusWaiting)
 		return
 	}
-	cards := quota.Cards(model, a.cfg)
+	cards := quota.Cards(model, a.snapshotCfg())
 	a.mu.Lock()
 	a.cards = cards
 	a.mu.Unlock()
@@ -513,7 +513,7 @@ func (a *App) paintSide(canvas *walk.Canvas, bounds walk.Rectangle, cards []quot
 	bg := brush(themeSideBack)
 	defer bg.Dispose()
 	canvas.FillRectanglePixels(bg, bounds)
-	if a.cfg.DockMode == "overlay" && a.cfg.AutoHide && !a.revealed {
+	if a.cfg.DockMode == "overlay" && a.cfg.AutoHide && !a.isRevealed() {
 		a.gearHit = walk.Rectangle{}
 		a.pinHit = walk.Rectangle{}
 		a.statusHit = walk.Rectangle{}
@@ -777,7 +777,9 @@ func (a *App) handleMouseDown(x, y int, button walk.MouseButton) {
 		return
 	}
 	if contains(a.pinHit, pt) {
+		a.mu.Lock()
 		a.cfg.AutoHide = !a.cfg.AutoHide
+		a.mu.Unlock()
 		_ = settings.Save(a.paths.Settings, a.cfg)
 		a.applyDock()
 		a.invalidate()
@@ -826,7 +828,9 @@ func (a *App) applyDock() {
 	rect := dockRect(full, dockWork, a.cfg.DockEdge, isSide(a.cfg.DockEdge), false)
 	if a.cfg.DockMode == "reserved" {
 		if a.cfg.AutoHide {
+			a.mu.Lock()
 			a.cfg.AutoHide = false
+			a.mu.Unlock()
 			_ = settings.Save(a.paths.Settings, a.cfg)
 		}
 		a.baseWork = &work
@@ -835,7 +839,7 @@ func (a *App) applyDock() {
 			_, _ = native.SetAppBar(uintptr(a.mw.Handle()), a.cfg.DockEdge, rect)
 			if reported, err := native.GetWorkArea(); err == nil {
 				if autoScale := appBarAutoScale(a.cfg.DockEdge, reported, rect); autoScale >= 0.5 && autoScale <= 3 && (autoScale < 0.95 || autoScale > 1.05) {
-					_, _ = native.SetAppBar(uintptr(a.mw.Handle()), a.cfg.DockEdge, scaleRect(rect, autoScale))
+					_, _ = native.SetAppBar(uintptr(a.mw.Handle()), a.cfg.DockEdge, native.ScaleRect(rect, autoScale))
 				}
 			}
 		}
@@ -850,7 +854,7 @@ func (a *App) applyDock() {
 		_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(hidden.Left), Y: int(hidden.Top), Width: int(hidden.Right - hidden.Left), Height: int(hidden.Bottom - hidden.Top)})
 		native.SetDockBoundsHidden(uintptr(a.mw.Handle()), hidden)
 		a.applyWindowOpacity()
-		a.revealed = false
+		a.setRevealed(false)
 		a.invalidate()
 		return
 	}
@@ -862,7 +866,7 @@ func (a *App) applyDock() {
 	_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
 	native.SetDockBoundsVisible(uintptr(a.mw.Handle()), rect)
 	a.applyWindowOpacity()
-	a.revealed = !hiddenHorizontal
+	a.setRevealed(!hiddenHorizontal)
 	a.invalidate()
 }
 
@@ -895,7 +899,8 @@ func (a *App) setStatusVisible(visible bool) {
 	if visible {
 		a.mw.Show()
 		a.applyDock()
-		a.refreshOnce(a.ctx)
+		// Off the UI thread: refreshOnce can block on provider HTTP calls.
+		go a.refreshOnce(a.ctx)
 	} else {
 		a.unregisterAppBar()
 		full := native.PrimaryBounds()
@@ -917,7 +922,7 @@ func (a *App) revealSideDock(rect native.Rect) {
 		native.SetDockBoundsVisible(uintptr(a.mw.Handle()), rect)
 		a.applyWindowOpacity()
 	})
-	a.revealed = true
+	a.setRevealed(true)
 	a.invalidate()
 }
 
@@ -927,13 +932,46 @@ func (a *App) hideSideDock(rect native.Rect) {
 		native.SetDockBoundsHidden(uintptr(a.mw.Handle()), rect)
 		a.applyWindowOpacity()
 	})
-	a.revealed = false
+	a.setRevealed(false)
 }
 
 func (a *App) isVisible() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.visible
+}
+
+// snapshotCfg returns a private copy of the settings (deep-copying the
+// hidden-band map) for code running off the UI thread. All cfg writes happen
+// on the UI thread under a.mu; unlocked reads are only safe on the UI thread.
+func (a *App) snapshotCfg() settings.Settings {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cfg := a.cfg
+	hidden := make(map[string]map[string]bool, len(cfg.HiddenQuotaBands))
+	for key, bands := range cfg.HiddenQuotaBands {
+		inner := make(map[string]bool, len(bands))
+		for band, v := range bands {
+			inner[band] = v
+		}
+		hidden[key] = inner
+	}
+	cfg.HiddenQuotaBands = hidden
+	return cfg
+}
+
+// revealed is read by paint (UI thread) and read/written by hoverLoop (its
+// own goroutine) and applyDock (UI thread), so access goes through a.mu.
+func (a *App) isRevealed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.revealed
+}
+
+func (a *App) setRevealed(v bool) {
+	a.mu.Lock()
+	a.revealed = v
+	a.mu.Unlock()
 }
 
 func (a *App) hoverLoop() {
@@ -944,7 +982,10 @@ func (a *App) hoverLoop() {
 		case <-a.ctx.Done():
 			return
 		case <-ticker.C:
-			if !a.isVisible() || a.cfg.DockMode != "overlay" || !a.cfg.AutoHide || a.mw == nil || a.mw.IsDisposed() {
+			// Snapshot the config once per tick: this loop runs off the UI
+			// thread while the UI thread mutates a.cfg.
+			cfg := a.snapshotCfg()
+			if !a.isVisible() || cfg.DockMode != "overlay" || !cfg.AutoHide || a.mw == nil || a.mw.IsDisposed() {
 				continue
 			}
 			pos := native.CursorPosition()
@@ -953,9 +994,9 @@ func (a *App) hoverLoop() {
 			if err != nil {
 				work = full
 			}
-			dockWork := dockWorkArea(a.cfg.DockMode, a.cfg.DockEdge, full, work)
+			dockWork := dockWorkArea(cfg.DockMode, cfg.DockEdge, full, work)
 			near := false
-			switch a.cfg.DockEdge {
+			switch cfg.DockEdge {
 			case "top":
 				near = pos.Y >= dockWork.Top && pos.Y <= dockWork.Top+4
 			case "bottom":
@@ -965,13 +1006,13 @@ func (a *App) hoverLoop() {
 			case "right":
 				near = pos.X >= full.Right-dockRevealStrip-4 && pos.X <= full.Right
 			}
-			side := isSide(a.cfg.DockEdge)
+			side := isSide(cfg.DockEdge)
 			if side {
-				rect := dockRect(full, dockWork, a.cfg.DockEdge, true, false)
-				hidden := sideOverlayHiddenRect(full, dockWork, a.cfg.DockEdge)
-				if a.revealed {
+				rect := dockRect(full, dockWork, cfg.DockEdge, true, false)
+				hidden := sideOverlayHiddenRect(full, dockWork, cfg.DockEdge)
+				if a.isRevealed() {
 					extended := walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)}
-					if a.cfg.DockEdge == "right" {
+					if cfg.DockEdge == "right" {
 						extended.X -= 40
 						extended.Width = int(full.Right) - extended.X
 					} else {
@@ -988,17 +1029,17 @@ func (a *App) hoverLoop() {
 				}
 				continue
 			}
-			rect := dockRect(full, dockWork, a.cfg.DockEdge, false, false)
-			if a.revealed {
-				extended := horizontalRevealRect(rect, a.cfg.DockEdge, full)
+			rect := dockRect(full, dockWork, cfg.DockEdge, false, false)
+			if a.isRevealed() {
+				extended := horizontalRevealRect(rect, cfg.DockEdge, full)
 				if contains(extended, walk.Point{X: int(pos.X), Y: int(pos.Y)}) {
 					continue
 				}
 				a.mw.Synchronize(func() {
-					hidden := dockRect(full, dockWork, a.cfg.DockEdge, false, true)
+					hidden := dockRect(full, dockWork, cfg.DockEdge, false, true)
 					_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(hidden.Left), Y: int(hidden.Top), Width: int(hidden.Right - hidden.Left), Height: int(hidden.Bottom - hidden.Top)})
 				})
-				a.revealed = false
+				a.setRevealed(false)
 				native.WakeWindow(uintptr(a.mw.Handle()))
 				continue
 			}
@@ -1006,7 +1047,7 @@ func (a *App) hoverLoop() {
 				a.mw.Synchronize(func() {
 					_ = a.mw.SetBoundsPixels(walk.Rectangle{X: int(rect.Left), Y: int(rect.Top), Width: int(rect.Right - rect.Left), Height: int(rect.Bottom - rect.Top)})
 				})
-				a.revealed = true
+				a.setRevealed(true)
 				a.invalidate()
 			}
 			native.WakeWindow(uintptr(a.mw.Handle()))
@@ -1064,20 +1105,29 @@ func (a *App) showBandPicker(card quota.Card) {
 	_ = cancel.SetText(settingsCancel)
 	addButtonSpacer(buttons, bl)
 	save.Clicked().Attach(func() {
+		// Collect widget state first, then mutate the shared hidden-band map
+		// under a.mu: the refresh goroutine iterates this map via
+		// snapshotCfg, and an unlocked in-place rewrite could panic it.
+		unchecked := map[string]bool{}
+		for key, cb := range checks {
+			if !cb.Checked() {
+				unchecked[key] = true
+			}
+		}
+		a.mu.Lock()
 		next := settings.HiddenSet(a.cfg, card.SnapshotKey)
 		for k := range next {
 			delete(next, k)
 		}
-		for key, cb := range checks {
-			if !cb.Checked() {
-				next[key] = true
-			}
+		for key := range unchecked {
+			next[key] = true
 		}
+		a.mu.Unlock()
 		if err := settings.Save(a.paths.Settings, a.cfg); err != nil {
 			a.log.Printf("Failed to save settings: %v", err)
 		}
 		dlg.Accept()
-		a.refreshOnce(a.ctx)
+		go a.refreshOnce(a.ctx)
 	})
 	cancel.Clicked().Attach(func() { dlg.Cancel() })
 	_ = dlg.SetDefaultButton(save)
@@ -1113,7 +1163,9 @@ func (a *App) showSettingsDialog() {
 	opacity.ValueChanged().Attach(func() {
 		value := opacity.Value()
 		_ = opacityValue.SetText(fmt.Sprintf("%d%%", value))
+		a.mu.Lock()
 		a.cfg.OverlayOpacity = value
+		a.mu.Unlock()
 		a.applyWindowOpacity()
 	})
 	refresh := number(dlg, settingsRefresh, float64(a.cfg.RefreshSeconds), 5, 600)
@@ -1159,9 +1211,13 @@ func (a *App) showSettingsDialog() {
 			next.GaugeWarnPercent != original.GaugeWarnPercent ||
 			next.GaugeCritPercent != original.GaugeCritPercent
 
+		a.mu.Lock()
 		a.cfg = next
+		a.mu.Unlock()
 		if err := settings.Save(a.paths.Settings, a.cfg); err != nil {
+			a.mu.Lock()
 			a.cfg = original
+			a.mu.Unlock()
 			walk.MsgBox(dlg, appName, err.Error(), walk.MsgBoxIconError)
 			return
 		}
@@ -1179,7 +1235,7 @@ func (a *App) showSettingsDialog() {
 			a.applyWindowOpacity()
 		}
 		if themeChanged || dockChanged || opacityChanged || refreshChanged {
-			a.refreshOnce(a.ctx)
+			go a.refreshOnce(a.ctx)
 		}
 	})
 	cancel.Clicked().Attach(func() { dlg.Cancel() })
@@ -1191,7 +1247,9 @@ func (a *App) showSettingsDialog() {
 		themeChanged := a.cfg.Theme != original.Theme
 		dockChanged := a.cfg.DockMode != original.DockMode || a.cfg.DockEdge != original.DockEdge || a.cfg.AutoHide != original.AutoHide
 		opacityChanged := a.cfg.OverlayOpacity != original.OverlayOpacity
+		a.mu.Lock()
 		a.cfg = original
+		a.mu.Unlock()
 		if themeChanged {
 			a.applyTheme()
 		}
@@ -1829,18 +1887,6 @@ func dockWorkArea(mode string, edge string, full native.Rect, work native.Rect) 
 		return full
 	}
 	return work
-}
-
-func scaleRect(rect native.Rect, scale float64) native.Rect {
-	if scale <= 0 {
-		scale = 1
-	}
-	return native.Rect{
-		Left:   int32(math.Round(float64(rect.Left) * scale)),
-		Top:    int32(math.Round(float64(rect.Top) * scale)),
-		Right:  int32(math.Round(float64(rect.Right) * scale)),
-		Bottom: int32(math.Round(float64(rect.Bottom) * scale)),
-	}
 }
 
 func appBarAutoScale(edge string, reported native.Rect, desired native.Rect) float64 {
