@@ -25,7 +25,7 @@ LimitDock renders only quota-like rows. A provider with no local credential evid
 
 | Provider or agent | Notes |
 | --- | --- |
-| Claude Code | OAuth usage from `~/.claude/.credentials.json`, `CLAUDE_CODE_OAUTH_TOKEN`, or LimitDock's own Connect sign-in (see below). Expired CLI tokens are refreshed and written back automatically, so quota keeps working without the `claude` CLI running. Real utilization percent, not a time-elapsed estimate. |
+| Claude Code | OAuth usage from `~/.claude/.credentials.json`, `CLAUDE_CODE_OAUTH_TOKEN`, or LimitDock's own Connect sign-in (see below). Expired CLI tokens are refreshed and written back automatically, so quota keeps working without the `claude` CLI running. When the usage API is temporarily rate limited, 5h/7d quota is read from the rate-limit headers of a minimal API call instead of going stale. Real utilization percent, not a time-elapsed estimate. |
 | Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` events so 5h and 7d windows stay accurate. Expired tokens are refreshed and written back to `auth.json` automatically. |
 | Antigravity | Local language-server status first; falls back to a cached `%APPDATA%\Antigravity` quota file only when it is under 45 minutes old (shown as `stale`). No card when neither source has quota rows. |
 | Gemini CLI | `~/.gemini/oauth_creds.json` (or related credential files) and Code Assist `retrieveUserQuota`. Expired tokens are refreshed and written back automatically. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
@@ -87,6 +87,8 @@ Right-click the tray icon:
 ### Connect Claude
 
 If Claude credentials exist but are unusable, its card shows `Sign in`. If Claude was never configured locally, no Claude card appears — use `Settings → Providers → Connect...` for first-time sign-in. Open the Connect flow from the tray's `Connect Claude...` item (visible only while the Claude card is `Sign in`), from `Settings → Providers` (always available), or by double-clicking the Claude card. Click through to open the Claude sign-in page in your browser, approve LimitDock, then copy the code the page shows — LimitDock auto-fills when it looks like a sign-in code, or use the dialog's `Paste` button / Ctrl+V. LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`, so this works even without the `claude` CLI installed. Disconnect from the same `Settings → Providers` panel.
+
+If the dialog reports HTTP 429, Anthropic is rate limiting this device's IP on its sign-in endpoint: wait a few minutes and click `Connect` again — the pasted code stays valid, no need to restart the browser sign-in. LimitDock pauses its own background token refreshes after a 429 (with a log line in `state\logs\limitdock.log`) so the window can clear on its own.
 
 ### Docking
 
