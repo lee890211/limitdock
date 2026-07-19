@@ -241,6 +241,35 @@ func TestCodexWhamToSnapshotBothKeyStyles(t *testing.T) {
 	}
 }
 
+func TestMergeCodexSnapsKeepsSecondaryAttributes(t *testing.T) {
+	used := 27.0
+	primary := &readmodel.Snapshot{
+		ProviderID: "codex",
+		AccountID:  "acct",
+		Status:     readmodel.StatusOK,
+		Metrics:    map[string]readmodel.Metric{"rate_limit_codex_primary": {Used: &used, Unit: "%", Window: "5h"}},
+		Attributes: map[string]any{"source": "codex-wham"},
+	}
+	secondary := &readmodel.Snapshot{
+		ProviderID: "codex",
+		AccountID:  "acct",
+		Status:     readmodel.StatusOK,
+		Metrics:    map[string]readmodel.Metric{"rate_limit_codex_bengalfox_primary": {Used: &used, Unit: "%", Window: "5h"}},
+		Attributes: map[string]any{"rate_limit_codex_bengalfox_name": "GPT-5.3-Codex-Spark", "source": "codex-local"},
+	}
+
+	merged := mergeCodexSnaps(primary, secondary)
+	if merged.Attributes["rate_limit_codex_bengalfox_name"] != "GPT-5.3-Codex-Spark" {
+		t.Fatalf("secondary display-name attribute lost in merge: %#v", merged.Attributes)
+	}
+	if merged.Attributes["source"] != "codex-wham" {
+		t.Fatalf("primary must win on attribute conflicts: %#v", merged.Attributes)
+	}
+	if len(merged.Metrics) != 2 {
+		t.Fatalf("expected metric union, got %#v", merged.Metrics)
+	}
+}
+
 func TestCodexReaderReturnsEmptyWithoutRateLimits(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sessions")

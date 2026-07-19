@@ -235,11 +235,7 @@ func CollectBands(snap *readmodel.Snapshot, cfg settings.Settings, cap int, key 
 			rotatable = append(rotatable, row)
 		}
 	}
-	if len(exhausted) < cap {
-		rows = append(exhausted, rotatable...)
-	} else {
-		rows = append(exhausted, rotatable...)
-	}
+	rows = append(exhausted, rotatable...)
 	if len(rows) > cap {
 		rows = rows[:cap]
 	}

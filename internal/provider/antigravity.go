@@ -74,6 +74,13 @@ var antigravityEndpointCache = struct {
 	items     []antigravityEndpoint
 }{}
 
+var antigravityStatusCache = struct {
+	sync.Mutex
+	key       string
+	expiresAt time.Time
+	items     []antigravityCachedStatus
+}{}
+
 func (r AntigravityReader) Name() string {
 	return "antigravity"
 }
@@ -216,6 +223,20 @@ type antigravityCachedStatus struct {
 func (r AntigravityReader) cachedStatuses() []antigravityCachedStatus {
 	roots := defaultAntigravityDataDirs()
 
+	// The candidate discovery walks the whole Antigravity data tree; while
+	// the live endpoint is unreachable this runs on every poll, so cache the
+	// result briefly. Fresh quota files are only written while Antigravity
+	// runs, and then the live probe wins anyway.
+	cacheKey := strings.ToLower(strings.Join(roots, "|"))
+	now := time.Now()
+	antigravityStatusCache.Lock()
+	if antigravityStatusCache.key == cacheKey && now.Before(antigravityStatusCache.expiresAt) {
+		items := append([]antigravityCachedStatus(nil), antigravityStatusCache.items...)
+		antigravityStatusCache.Unlock()
+		return items
+	}
+	antigravityStatusCache.Unlock()
+
 	out := []antigravityCachedStatus{}
 	seen := map[string]bool{}
 	for _, root := range roots {
@@ -240,6 +261,12 @@ func (r AntigravityReader) cachedStatuses() []antigravityCachedStatus {
 			out = append(out, antigravityCachedStatus{Status: status, ModTime: modTime})
 		}
 	}
+
+	antigravityStatusCache.Lock()
+	antigravityStatusCache.key = cacheKey
+	antigravityStatusCache.expiresAt = now.Add(5 * time.Minute)
+	antigravityStatusCache.items = append([]antigravityCachedStatus(nil), out...)
+	antigravityStatusCache.Unlock()
 	return out
 }
 
@@ -270,7 +297,12 @@ func antigravityStatusCandidatePaths(root string) []string {
 			}
 			return nil
 		}
-		if len(candidates) >= 40 || strings.ToLower(filepath.Ext(path)) != ".json" {
+		if len(candidates) >= 40 {
+			// The cap previously only stopped appending; keep walking the
+			// rest of the tree was pure waste.
+			return filepath.SkipAll
+		}
+		if strings.ToLower(filepath.Ext(path)) != ".json" {
 			return nil
 		}
 		lower := strings.ToLower(path)
