@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -28,6 +29,7 @@ const (
 	connectPasteButton      = "Paste"
 	connectButton           = "Connect"
 	connectBusy             = "Connecting..."
+	connectRateLimited      = "Anthropic is rate limiting this device (HTTP 429). Wait 2-3 minutes, then click Connect again — the same code still works."
 	disconnectButton        = "Disconnect"
 	connectSuccessPrefix    = "Connected as "
 )
@@ -300,6 +302,13 @@ func (a *App) showConnectClaudeDialog() {
 				}
 				if err != nil {
 					connectBtn.SetEnabled(true)
+					if errors.Is(err, claudeauth.ErrRateLimited) {
+						// The token endpoint rate-limits per IP; the pasted
+						// code stays valid for a few minutes, so a plain
+						// retry usually succeeds once the window clears.
+						_ = statusLabel.SetText(connectRateLimited)
+						return
+					}
 					_ = statusLabel.SetText(fmt.Sprintf("Connect failed: %v", err))
 					return
 				}

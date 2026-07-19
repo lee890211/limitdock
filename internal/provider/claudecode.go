@@ -17,9 +17,11 @@ const (
 	claudeCodeAPIBase    = "https://api.anthropic.com"
 	claudeCodeUsagePath  = "/api/oauth/usage"
 	claudeCodeBetaHeader = "oauth-2025-04-20"
-	claudeCodeUserAgent  = "claude-code/2.1.0"
-	claudeCodeTimeout    = 10 * time.Second
-	claudeSnapshotKey    = "claude-code"
+	// claudeCodeUserAgent must stay in sync with the token-endpoint client;
+	// both mirror the official CLI (see claudeauth.UserAgent).
+	claudeCodeUserAgent = claudeauth.UserAgent
+	claudeCodeTimeout   = 10 * time.Second
+	claudeSnapshotKey   = "claude-code"
 )
 
 // ClaudeCodeReader fetches quota directly from the Anthropic OAuth usage API.
