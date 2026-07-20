@@ -202,8 +202,11 @@ func (m Manager) Resolve(ctx context.Context) (Token, error) {
 // user:inference-only scope with 403.
 func (m Manager) SaveSetupToken(token string) error {
 	token = strings.TrimSpace(token)
-	if !strings.HasPrefix(token, "sk-ant-") {
-		return fmt.Errorf("that does not look like a Claude setup-token (expected it to start with sk-ant-)")
+	// sk-ant-oat is the setup-token (OAuth access token) shape specifically;
+	// a plain sk-ant- prefix would also accept Console API keys
+	// (sk-ant-api...), which the OAuth usage endpoints reject.
+	if !strings.HasPrefix(token, "sk-ant-oat") {
+		return fmt.Errorf("that does not look like a Claude setup-token (expected it to start with sk-ant-oat)")
 	}
 	return m.store().Save(storeTokenName, storedToken{AccessToken: token})
 }

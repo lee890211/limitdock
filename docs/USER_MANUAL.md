@@ -159,7 +159,7 @@ Connect Claude from LimitDock when you want a LimitDock-owned token, or when an 
 **Setup-token (recommended)**
 
 1. Click `Run claude setup-token`. A terminal opens already running the command; approve LimitDock in the browser it launches. Requires the `claude` CLI on PATH — if the terminal cannot start, the command is copied to the clipboard to run manually.
-2. Copy the `sk-ant-...` token the terminal prints. The dialog auto-fills it from the clipboard (or click `Paste` / press Ctrl+V).
+2. Copy the `sk-ant-oat...` token the terminal prints. The dialog auto-fills it from the clipboard (or click `Paste` / press Ctrl+V).
 3. Click `Save`.
 
 Setup-tokens are long-lived, so LimitDock never needs Anthropic's rate-limited OAuth refresh endpoint. Quota is read from rate-limit headers and shows the `5h`/`7d` bars (no per-model 7d split — the usage API rejects this token type).

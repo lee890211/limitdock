@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"limitdock/internal/credstore"
 	"limitdock/internal/quota"
 	"limitdock/internal/readmodel"
 	"limitdock/internal/settings"
@@ -223,8 +224,11 @@ func TestClaudeCodeReaderExpiredCLICredentialsSurfaceNeedsAuth(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeReaderRefreshRejectionSurfacesNeedsAuth(t *testing.T) {
+func TestClaudeCodeReaderStoreRefreshRejectionSurfacesNeedsAuth(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	// The store token (the only kind LimitDock still refreshes) is expired and
+	// the token endpoint rejects the refresh: the reader must map that
+	// AuthError to a needs_auth card.
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -232,21 +236,20 @@ func TestClaudeCodeReaderRefreshRejectionSurfacesNeedsAuth(t *testing.T) {
 	}))
 	defer tokenSrv.Close()
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".credentials.json")
-	creds := map[string]any{
-		"claudeAiOauth": map[string]any{
-			"accessToken":  "expired-token",
-			"refreshToken": "dead-refresh",
-			"expiresAt":    int64(1000),
-		},
-	}
-	data, _ := json.Marshal(creds)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write creds: %v", err)
+	storeDir := t.TempDir()
+	if err := credstore.New(storeDir).Save("claude", map[string]any{
+		"accessToken":  "expired-token",
+		"refreshToken": "dead-refresh",
+		"expiresAt":    int64(1000),
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
 	}
 
-	reader := ClaudeCodeReader{CredentialsPath: path, TokenURL: tokenSrv.URL, CredStoreDir: t.TempDir()}
+	reader := ClaudeCodeReader{
+		CredentialsPath: filepath.Join(t.TempDir(), "missing.json"),
+		TokenURL:        tokenSrv.URL,
+		CredStoreDir:    storeDir,
+	}
 	model, err := reader.Read(context.Background())
 	if err != nil {
 		t.Fatalf("needs_auth should not be an error: %v", err)

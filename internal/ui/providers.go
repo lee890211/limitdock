@@ -32,7 +32,7 @@ const (
 	connectRateLimited      = "Anthropic is rate limiting this device (HTTP 429). Wait 2-3 minutes, then click Connect again — the same code still works."
 	connectSuccessPrefix    = "Connected as "
 
-	setupTokenInstructions = "Recommended: a setup-token. It is long-lived, so LimitDock never needs the OAuth refresh endpoint that keeps rate limiting this app (HTTP 429).\r\n1. Click 'Run claude setup-token' — a terminal opens and runs the command; approve in the browser.\r\n2. Copy the printed sk-ant-... token; this dialog picks it up automatically.\r\n3. Click Save. Stored encrypted on this PC, used only to read quota (shows the 5h/7d bars).\r\nPrefer signing in without a terminal? Use 'Browser sign-in...' below."
+	setupTokenInstructions = "Recommended: a setup-token. It is long-lived, so LimitDock never needs the OAuth refresh endpoint that keeps rate limiting this app (HTTP 429).\r\n1. Click 'Run claude setup-token' — a terminal opens and runs the command; approve in the browser.\r\n2. Copy the printed sk-ant-oat... token; this dialog picks it up automatically.\r\n3. Click Save. Stored encrypted on this PC, used only to read quota (shows the 5h/7d bars).\r\nPrefer signing in without a terminal? Use 'Browser sign-in...' below."
 	setupTokenRunButton    = "Run claude setup-token"
 	setupTokenCmd          = "claude setup-token"
 	setupTokenHint         = "Paste the setup-token here"
@@ -400,7 +400,7 @@ func (a *App) showClaudeSignInDialog() {
 			}
 			return false
 		}
-		if !force && !strings.HasPrefix(text, "sk-ant-") {
+		if !force && !strings.HasPrefix(text, "sk-ant-oat") {
 			return false
 		}
 		_ = tokenEdit.SetText(text)

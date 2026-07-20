@@ -153,6 +153,9 @@ func TestSaveSetupTokenRejectsNonToken(t *testing.T) {
 	if err := m.SaveSetupToken("abc12#xyz89"); err == nil {
 		t.Fatal("a pasted authorize code must be rejected, not stored")
 	}
+	if err := m.SaveSetupToken("sk-ant-api03-console-key"); err == nil {
+		t.Fatal("a Console API key must be rejected, not stored")
+	}
 }
 
 func TestResolveUsesValidCLIToken(t *testing.T) {
