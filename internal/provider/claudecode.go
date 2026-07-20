@@ -52,11 +52,12 @@ const (
 
 	// Header-probe fallback: the usage API budget is tiny (~4-5 calls per
 	// 5-minute window, measured live 2026-07-19) and shared with the Claude
-	// Code CLI itself, while every successful /v1/messages response carries
-	// anthropic-ratelimit-unified-* headers on the independent inference
-	// limit. A 1-token probe keeps 5h/7d quota fresh when the usage API is
-	// rate limited, and is the only quota source for user:inference-only
-	// tokens (claude setup-token), which the usage API rejects with 403.
+	// Code CLI itself, while /v1/messages carries anthropic-ratelimit-unified-*
+	// headers on both 2xx and rate_limit_error 429 responses (exhausted
+	// budget still reports utilization, measured live 2026-07-20). A 1-token
+	// probe keeps 5h/7d quota fresh when the usage API is rate limited, and
+	// is the only quota source for user:inference-only tokens (claude
+	// setup-token), which the usage API rejects with 403.
 	claudeMessagesPath  = "/v1/messages"
 	claudeAPIVersion    = "2023-06-01"
 	claudeProbeModel    = "claude-haiku-4-5-20251001"
@@ -247,16 +248,25 @@ func (r ClaudeCodeReader) fetchHeaderQuota(ctx context.Context, token string) (*
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 
+	// Unified rate-limit headers arrive on 2xx and on rate_limit_error (HTTP
+	// 429) when the 5h/7d budget is exhausted — measured live 2026-07-20.
+	// Prefer headers whenever present so an exhausted window still surfaces
+	// as 0% remaining; only fall through to the status code when they are
+	// absent (auth rejection, edge challenge pages, etc.).
+	snap, hdrErr := claudeHeadersToSnapshot(resp.Header)
+	if hdrErr == nil {
+		return snap, nil
+	}
 	if resp.StatusCode >= 300 {
 		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
-	return claudeHeadersToSnapshot(resp.Header)
+	return nil, hdrErr
 }
 
 // claudeHeadersToSnapshot maps unified rate-limit headers (utilization as a
-// 0-1 fraction, resets as epoch seconds; error bodies carry no headers, so
-// only 2xx responses reach here) onto the same metric keys the usage API
-// produces.
+// 0-1 fraction, resets as epoch seconds) onto the same metric keys the usage
+// API produces. Callers may pass headers from any status; missing headers
+// yield an error.
 func claudeHeadersToSnapshot(h http.Header) (*readmodel.Snapshot, error) {
 	metrics := map[string]readmodel.Metric{}
 	resets := map[string]any{}
