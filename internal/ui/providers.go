@@ -30,8 +30,15 @@ const (
 	connectButton           = "Connect"
 	connectBusy             = "Connecting..."
 	connectRateLimited      = "Anthropic is rate limiting this device (HTTP 429). Wait 2-3 minutes, then click Connect again — the same code still works."
-	disconnectButton        = "Disconnect"
 	connectSuccessPrefix    = "Connected as "
+
+	setupTokenInstructions = "Recommended: a setup-token. It is long-lived, so LimitDock never needs the OAuth refresh endpoint that keeps rate limiting this app (HTTP 429).\r\n1. Click 'Run claude setup-token' — a terminal opens and runs the command; approve in the browser.\r\n2. Copy the printed sk-ant-oat... token; this dialog picks it up automatically.\r\n3. Click Save. Stored encrypted on this PC, used only to read quota (shows the 5h/7d bars).\r\nPrefer signing in without a terminal? Use 'Browser sign-in...' below."
+	setupTokenRunButton    = "Run claude setup-token"
+	setupTokenCmd          = "claude setup-token"
+	setupTokenHint         = "Paste the setup-token here"
+	setupTokenSaveButton   = "Save"
+	setupTokenSavedMsg     = "Setup-token saved.\r\nQuota will appear within a few seconds."
+	browserSignInButton    = "Browser sign-in..."
 )
 
 // knownProviders is the fixed display order for the Settings Providers
@@ -126,8 +133,9 @@ func (a *App) refreshTrayProviderActions(cards []quota.Card) {
 }
 
 // addProvidersControls renders the per-provider status list in the Settings
-// dialog. Claude always offers Connect (and Disconnect while a LimitDock
-// token exists) so a user without any CLI login can still sign in.
+// dialog. Claude always offers Connect so a user without any CLI login can
+// still sign in; re-connecting overwrites the stored token, so no separate
+// disconnect action exists.
 func (a *App) addProvidersControls(parent walk.Container) {
 	rows := providerStatusRows(a.currentCards())
 	connectedEmail, connected := a.claudeAuthManager().StoredAccountEmail()
@@ -147,26 +155,10 @@ func (a *App) addProvidersControls(parent walk.Container) {
 		if row.ProviderID == "claude_code" {
 			connect, _ := walk.NewPushButton(comp)
 			_ = connect.SetText(connectButton + "...")
-			connect.Clicked().Attach(func() { a.showConnectClaudeDialog() })
-			if connected {
-				disconnect, _ := walk.NewPushButton(comp)
-				_ = disconnect.SetText(disconnectButton)
-				disconnect.Clicked().Attach(func() { a.disconnectClaude() })
-			}
+			connect.Clicked().Attach(func() { a.showClaudeSignInDialog() })
 		}
 		addButtonSpacer(comp, layout)
 	}
-}
-
-func (a *App) disconnectClaude() {
-	if walk.MsgBox(a.mw, connectTitle, "Remove the Claude token stored by LimitDock?\r\n(Your claude CLI login is not affected.)", walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
-		return
-	}
-	if err := a.claudeAuthManager().Disconnect(); err != nil {
-		walk.MsgBox(a.mw, connectTitle, err.Error(), walk.MsgBoxIconError)
-		return
-	}
-	go a.manualRefresh()
 }
 
 // showConnectClaudeDialog runs the PKCE connect flow: open the browser, let
@@ -331,6 +323,152 @@ func (a *App) showConnectClaudeDialog() {
 	_ = pasteEdit.SetFocus()
 	_ = applyClipboard(false)
 	dlg.Run()
+}
+
+// showClaudeSignInDialog is the single Claude sign-in entry point. It leads
+// with the setup-token route (long-lived token, immune to the OAuth token
+// endpoint's per-client 429s observed live 2026-07-20) and offers the browser
+// PKCE flow as the secondary option.
+func (a *App) showClaudeSignInDialog() {
+	mgr := a.claudeAuthManager()
+	dlg, err := walk.NewDialogWithFixedSize(nil)
+	if err != nil {
+		return
+	}
+	defer dlg.Dispose()
+	_ = dlg.SetTitle(connectTitle)
+	_ = dlg.SetClientSize(walk.Size{Width: 520, Height: 330})
+	a.centerDialog(dlg, 560, 390)
+	layout := walk.NewVBoxLayout()
+	_ = layout.SetMargins(walk.Margins{HNear: 14, VNear: 14, HFar: 14, VFar: 14})
+	_ = layout.SetSpacing(8)
+	_ = dlg.SetLayout(layout)
+
+	instructions, _ := walk.NewTextEdit(dlg)
+	instructions.SetCompactHeight(true)
+	_ = instructions.SetReadOnly(true)
+	_ = instructions.SetText(setupTokenInstructions)
+
+	runRow, _ := walk.NewComposite(dlg)
+	runLayout := leftButtonLayout(runRow)
+	runBtn, _ := walk.NewPushButton(runRow)
+	_ = runBtn.SetText(setupTokenRunButton)
+	addButtonSpacer(runRow, runLayout)
+
+	// Password mode keeps the token off screenshots; the paste button and
+	// Ctrl+V handler mirror the browser dialog, whose message loop can
+	// swallow native paste.
+	tokenEdit, _ := walk.NewLineEdit(dlg)
+	tokenEdit.SetPasswordMode(true)
+	_ = tokenEdit.SetCueBanner(setupTokenHint)
+
+	pasteRow, _ := walk.NewComposite(dlg)
+	pasteLayout := leftButtonLayout(pasteRow)
+	pasteBtn, _ := walk.NewPushButton(pasteRow)
+	_ = pasteBtn.SetText(connectPasteButton)
+	addButtonSpacer(pasteRow, pasteLayout)
+
+	statusLabel, _ := walk.NewLabel(dlg)
+	_ = statusLabel.SetText(setupTokenHint)
+
+	runBtn.Clicked().Attach(func() {
+		if err := openSetupTokenTerminal(); err != nil {
+			// Terminal launch failed (claude not on PATH?): degrade to
+			// copying the command for a manual run.
+			_ = walk.Clipboard().SetText(setupTokenCmd)
+			_ = statusLabel.SetText("Could not start the terminal; the command was copied — run it manually.")
+			return
+		}
+		_ = statusLabel.SetText("Terminal opened — approve in the browser, then copy the printed token.")
+	})
+
+	// applyTokenClipboard fills the field from the clipboard; unforced calls
+	// (the change watcher, Save's last chance) only accept setup-token-shaped
+	// text so random clipboard scraps are ignored.
+	applyTokenClipboard := func(force bool) bool {
+		text, err := walk.Clipboard().Text()
+		if err != nil {
+			if force {
+				_ = statusLabel.SetText("Clipboard is empty or unavailable.")
+			}
+			return false
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			if force {
+				_ = statusLabel.SetText("Clipboard is empty.")
+			}
+			return false
+		}
+		if !force && !strings.HasPrefix(text, "sk-ant-oat") {
+			return false
+		}
+		_ = tokenEdit.SetText(text)
+		_ = statusLabel.SetText("Token ready — click Save.")
+		return true
+	}
+	pasteBtn.Clicked().Attach(func() { _ = applyTokenClipboard(true) })
+	tokenEdit.KeyDown().Attach(func(key walk.Key) {
+		if key == walk.KeyV && walk.ModifiersDown()&walk.ModControl != 0 {
+			_ = applyTokenClipboard(true)
+		}
+	})
+	clipboardHandler := walk.Clipboard().ContentsChanged().Attach(func() {
+		if dlg.IsDisposed() {
+			return
+		}
+		_ = applyTokenClipboard(false)
+	})
+	defer walk.Clipboard().ContentsChanged().Detach(clipboardHandler)
+
+	buttons, _ := walk.NewComposite(dlg)
+	bl := leftButtonLayout(buttons)
+	browserBtn, _ := walk.NewPushButton(buttons)
+	_ = browserBtn.SetText(browserSignInButton)
+	addButtonSpacer(buttons, bl)
+	saveBtn, _ := walk.NewPushButton(buttons)
+	_ = saveBtn.SetText(setupTokenSaveButton)
+	cancelBtn, _ := walk.NewPushButton(buttons)
+	_ = cancelBtn.SetText(settingsCancel)
+
+	openBrowserFlow := false
+	browserBtn.Clicked().Attach(func() {
+		openBrowserFlow = true
+		dlg.Cancel()
+	})
+	saveBtn.Clicked().Attach(func() {
+		token := strings.TrimSpace(tokenEdit.Text())
+		if token == "" {
+			// Last chance: the terminal copy may already sit in the clipboard.
+			if !applyTokenClipboard(false) {
+				_ = statusLabel.SetText(setupTokenHint)
+				return
+			}
+			token = strings.TrimSpace(tokenEdit.Text())
+		}
+		if token == "" {
+			_ = statusLabel.SetText(setupTokenHint)
+			return
+		}
+		// Local DPAPI encrypt + file write only — no network, safe on the
+		// UI thread.
+		if err := mgr.SaveSetupToken(token); err != nil {
+			_ = statusLabel.SetText(err.Error())
+			return
+		}
+		dlg.Accept()
+		walk.MsgBox(a.mw, connectTitle, setupTokenSavedMsg, walk.MsgBoxIconInformation)
+		go a.refreshOnce(provider.WithForceRefresh(a.ctx))
+	})
+	cancelBtn.Clicked().Attach(func() { dlg.Cancel() })
+	_ = dlg.SetDefaultButton(saveBtn)
+	_ = dlg.SetCancelButton(cancelBtn)
+	native.FocusTopmost(uintptr(dlg.Handle()))
+	_ = tokenEdit.SetFocus()
+	dlg.Run()
+	if openBrowserFlow {
+		a.showConnectClaudeDialog()
+	}
 }
 
 // looksLikeClaudeAuthCode reports whether clipboard text is worth auto-filling

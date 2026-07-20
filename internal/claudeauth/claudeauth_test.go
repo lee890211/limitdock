@@ -60,6 +60,27 @@ func expiredOAuth() map[string]any {
 	}
 }
 
+// seedExpiredStore returns a StoreDir holding an expired Connect token with a
+// refresh token, the only credential shape that still triggers a background
+// refresh.
+func seedExpiredStore(t *testing.T) string {
+	t.Helper()
+	storeDir := t.TempDir()
+	if err := credstore.New(storeDir).Save("claude", storedToken{
+		AccessToken:  "stored-old",
+		RefreshToken: "stored-refresh",
+		ExpiresAt:    time.Now().Add(-time.Minute).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	return storeDir
+}
+
+func missingCLIPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "missing.json")
+}
+
 type tokenServer struct {
 	*httptest.Server
 	hits     atomic.Int64
@@ -109,6 +130,34 @@ func TestResolveEnvVarWins(t *testing.T) {
 	}
 }
 
+func TestSaveSetupTokenResolvesWithoutRefresh(t *testing.T) {
+	clearAuthEnv(t)
+	// TokenURL deliberately unreachable: a setup-token must never trigger a
+	// token-endpoint call.
+	m := Manager{
+		StoreDir:        t.TempDir(),
+		CredentialsPath: filepath.Join(t.TempDir(), "missing.json"),
+		TokenURL:        "http://127.0.0.1:0/unreachable",
+	}
+	if err := m.SaveSetupToken("  sk-ant-oat01-setup  "); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	tok, err := m.Resolve(context.Background())
+	if err != nil || tok.AccessToken != "sk-ant-oat01-setup" || tok.Source != "store" {
+		t.Fatalf("setup-token should resolve from the store untouched: %#v err=%v", tok, err)
+	}
+}
+
+func TestSaveSetupTokenRejectsNonToken(t *testing.T) {
+	m := Manager{StoreDir: t.TempDir()}
+	if err := m.SaveSetupToken("abc12#xyz89"); err == nil {
+		t.Fatal("a pasted authorize code must be rejected, not stored")
+	}
+	if err := m.SaveSetupToken("sk-ant-api03-console-key"); err == nil {
+		t.Fatal("a Console API key must be rejected, not stored")
+	}
+}
+
 func TestResolveUsesValidCLIToken(t *testing.T) {
 	clearAuthEnv(t)
 	oauth := expiredOAuth()
@@ -122,95 +171,40 @@ func TestResolveUsesValidCLIToken(t *testing.T) {
 	}
 }
 
-func TestResolveRefreshesExpiredCLITokenPreservingUnknownFields(t *testing.T) {
+func TestResolveExpiredCLITokenIsReadOnlyAuthError(t *testing.T) {
 	clearAuthEnv(t)
 	path := writeCLIFile(t, expiredOAuth())
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
 	ts := newTokenServer(t, http.StatusOK, rotatedResponse(), nil)
 	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: ts.URL}
 
-	tok, err := m.Resolve(context.Background())
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if tok.AccessToken != "new-access" || tok.Source != "cli" {
-		t.Fatalf("unexpected token: %#v", tok)
-	}
-	if got := ts.lastForm.Get("grant_type"); got != "refresh_token" {
-		t.Fatalf("grant_type = %q", got)
-	}
-	if got := ts.lastForm.Get("client_id"); got != ClaudeOAuthClientID {
-		t.Fatalf("client_id = %q", got)
-	}
-	if got := ts.lastForm.Get("refresh_token"); got != "old-refresh" {
-		t.Fatalf("refresh_token = %q", got)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatalf("parse back: %v", err)
-	}
-	if doc["unknownTopLevel"] != "keep-me" {
-		t.Fatalf("unknown top-level field lost: %#v", doc)
-	}
-	design, _ := doc["designOauth"].(map[string]any)
-	if design == nil || design["accessToken"] != "design-token" {
-		t.Fatalf("designOauth sibling lost: %#v", doc["designOauth"])
-	}
-	oauth, _ := doc["claudeAiOauth"].(map[string]any)
-	if oauth["accessToken"] != "new-access" || oauth["refreshToken"] != "new-refresh" {
-		t.Fatalf("tokens not rotated: %#v", oauth)
-	}
-	if oauth["subscriptionType"] != "max" || oauth["rateLimitTier"] != "default_claude_ai" {
-		t.Fatalf("oauth metadata lost: %#v", oauth)
-	}
-	if _, ok := oauth["scopes"].([]any); !ok {
-		t.Fatalf("scopes lost: %#v", oauth["scopes"])
-	}
-	expiresAt, ok := oauth["expiresAt"].(float64)
-	if !ok || int64(expiresAt) <= time.Now().UnixMilli() {
-		t.Fatalf("expiresAt not advanced: %#v", oauth["expiresAt"])
-	}
-}
-
-func TestResolveCLIWriteBackFailureReturnsAuthErrorNotToken(t *testing.T) {
-	clearAuthEnv(t)
-	sub := filepath.Join(t.TempDir(), "claude")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	path := filepath.Join(sub, ".credentials.json")
-	oauth, _ := json.Marshal(map[string]any{"claudeAiOauth": expiredOAuth()})
-	if err := os.WriteFile(path, oauth, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	ts := newTokenServer(t, http.StatusOK, rotatedResponse(), func() {
-		// Simulate the credentials directory vanishing between read and
-		// write-back so the atomic write cannot land.
-		os.RemoveAll(sub)
-	})
-	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: ts.URL}
-	tok, err := m.Resolve(context.Background())
-	if err == nil {
-		t.Fatalf("expected error, got token %#v", tok)
-	}
+	_, err = m.Resolve(context.Background())
 	var authErr *AuthError
 	if !errors.As(err, &authErr) {
-		t.Fatalf("expected AuthError, got %v", err)
+		t.Fatalf("expired CLI token must be AuthError, got %v", err)
 	}
-	if tok.AccessToken != "" {
-		t.Fatalf("token must not be returned when write-back fails: %#v", tok)
+	if !strings.Contains(authErr.Reason, "setup-token") {
+		t.Fatalf("guidance should point at the setup-token route, got %q", authErr.Reason)
+	}
+	if ts.hits.Load() != 0 {
+		t.Fatalf("the CLI lineage must never be refreshed by LimitDock, got %d POSTs", ts.hits.Load())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read fixture: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("the CLI credentials file must stay untouched")
 	}
 }
 
 func TestResolveRefreshRejectionIsAuthError(t *testing.T) {
 	clearAuthEnv(t)
-	path := writeCLIFile(t, expiredOAuth())
 	ts := newTokenServer(t, http.StatusBadRequest, map[string]any{"error": "invalid_grant"}, nil)
-	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: ts.URL}
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: missingCLIPath(t), TokenURL: ts.URL}
 	_, err := m.Resolve(context.Background())
 	var authErr *AuthError
 	if !errors.As(err, &authErr) {
@@ -220,9 +214,8 @@ func TestResolveRefreshRejectionIsAuthError(t *testing.T) {
 
 func TestResolveRefreshServerErrorIsTransient(t *testing.T) {
 	clearAuthEnv(t)
-	path := writeCLIFile(t, expiredOAuth())
 	ts := newTokenServer(t, http.StatusInternalServerError, map[string]any{}, nil)
-	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: ts.URL}
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: missingCLIPath(t), TokenURL: ts.URL}
 	_, err := m.Resolve(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
@@ -341,10 +334,9 @@ func TestExchangeCodePersistsTokenAndResolves(t *testing.T) {
 
 func TestRefreshRateLimitCooldownStopsFollowupPosts(t *testing.T) {
 	clearAuthEnv(t)
-	path := writeCLIFile(t, expiredOAuth())
 	ts := newTokenServer(t, http.StatusTooManyRequests, rateLimitBody(), nil)
 	now := time.Now()
-	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: ts.URL, Now: func() time.Time { return now }}
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: missingCLIPath(t), TokenURL: ts.URL, Now: func() time.Time { return now }}
 
 	if _, err := m.Resolve(context.Background()); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("expected rate limited, got %v", err)
@@ -377,34 +369,99 @@ func TestRefreshRateLimitCooldownStopsFollowupPosts(t *testing.T) {
 	}
 }
 
-func TestResolveStoreRateLimitSkipsCLIRefreshPost(t *testing.T) {
+func TestResolveStoreRateLimitReportsStoreErrorNotCLI(t *testing.T) {
 	clearAuthEnv(t)
-	storeDir := t.TempDir()
-	store := credstore.New(storeDir)
-	if err := store.Save("claude", storedToken{
-		AccessToken:  "stored-old",
-		RefreshToken: "stored-refresh",
-		ExpiresAt:    time.Now().Add(-time.Minute).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("seed store: %v", err)
-	}
+	// Store refresh 429s and the CLI file is expired too: exactly one POST may
+	// go out, and the transient store error (not the CLI file's AuthError)
+	// must surface so backoff keeps working.
 	path := writeCLIFile(t, expiredOAuth())
 	ts := newTokenServer(t, http.StatusTooManyRequests, rateLimitBody(), nil)
-	m := Manager{StoreDir: storeDir, CredentialsPath: path, TokenURL: ts.URL}
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: path, TokenURL: ts.URL}
 
 	_, err := m.Resolve(context.Background())
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("expected rate limited, got %v", err)
 	}
 	if ts.hits.Load() != 1 {
-		t.Fatalf("CLI refresh must not POST again after the store refresh hit 429, got %d", ts.hits.Load())
+		t.Fatalf("expected exactly one POST, got %d", ts.hits.Load())
+	}
+}
+
+func TestResolveStoreRateLimitBridgesToValidCLIToken(t *testing.T) {
+	clearAuthEnv(t)
+	// Store refresh 429s but the CLI file still holds a valid token: quota
+	// polling should ride the CLI token instead of failing.
+	oauth := expiredOAuth()
+	oauth["accessToken"] = "cli-valid"
+	oauth["expiresAt"] = time.Now().Add(time.Hour).UnixMilli()
+	path := writeCLIFile(t, oauth)
+	ts := newTokenServer(t, http.StatusTooManyRequests, rateLimitBody(), nil)
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: path, TokenURL: ts.URL}
+
+	tok, err := m.Resolve(context.Background())
+	if err != nil || tok.AccessToken != "cli-valid" || tok.Source != "cli" {
+		t.Fatalf("valid CLI token should bridge a store outage: %#v err=%v", tok, err)
+	}
+}
+
+func TestRefreshBreakerTripsAfterConsecutive429s(t *testing.T) {
+	clearAuthEnv(t)
+	var hits atomic.Int64
+	var succeed atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if !succeed.Load() {
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(rateLimitBody())
+			return
+		}
+		json.NewEncoder(w).Encode(rotatedResponse())
+	}))
+	t.Cleanup(srv.Close)
+	now := time.Now()
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: missingCLIPath(t), TokenURL: srv.URL, Now: func() time.Time { return now }}
+
+	// Three POSTs ride the cooldown ladder (2m, 5m rungs between them).
+	m.Resolve(context.Background())
+	now = now.Add(2*time.Minute + time.Second)
+	m.Resolve(context.Background())
+	now = now.Add(5*time.Minute + time.Second)
+	m.Resolve(context.Background())
+	if hits.Load() != 3 {
+		t.Fatalf("setup: expected 3 POSTs, got %d", hits.Load())
+	}
+
+	// Past every cooldown rung, the breaker still refuses a fourth attempt
+	// and reports a needs-auth state pointing at the setup-token route.
+	now = now.Add(time.Hour)
+	_, err := m.Resolve(context.Background())
+	var authErr *AuthError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("breaker must convert to AuthError, got %v", err)
+	}
+	if !strings.Contains(authErr.Reason, "setup-token") {
+		t.Fatalf("breaker guidance should mention setup-token, got %q", authErr.Reason)
+	}
+	if hits.Load() != 3 {
+		t.Fatalf("breaker must stop POSTs, got %d", hits.Load())
+	}
+
+	// A user-initiated exchange still goes through; success resets the
+	// breaker and stores a fresh token.
+	succeed.Store(true)
+	ch := PKCEChallenge{Verifier: "v", Challenge: "c", State: "s"}
+	if _, err := m.ExchangeCode(context.Background(), "code#s", ch); err != nil {
+		t.Fatalf("exchange must bypass the breaker: %v", err)
+	}
+	tok, err := m.Resolve(context.Background())
+	if err != nil || tok.AccessToken != "new-access" {
+		t.Fatalf("resolve after exchange: %#v err=%v", tok, err)
 	}
 }
 
 func TestExchangeCodeBypassesCooldownAndClearsIt(t *testing.T) {
 	clearAuthEnv(t)
-	storeDir := t.TempDir()
-	path := writeCLIFile(t, expiredOAuth())
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -416,7 +473,7 @@ func TestExchangeCodeBypassesCooldownAndClearsIt(t *testing.T) {
 		json.NewEncoder(w).Encode(rotatedResponse())
 	}))
 	t.Cleanup(srv.Close)
-	m := Manager{StoreDir: storeDir, CredentialsPath: path, TokenURL: srv.URL}
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: missingCLIPath(t), TokenURL: srv.URL}
 
 	// Arm the cooldown via a failed background refresh.
 	if _, err := m.Resolve(context.Background()); !errors.Is(err, ErrRateLimited) {
@@ -439,7 +496,6 @@ func TestExchangeCodeBypassesCooldownAndClearsIt(t *testing.T) {
 
 func TestRateLimitHonorsRetryAfterHeader(t *testing.T) {
 	clearAuthEnv(t)
-	path := writeCLIFile(t, expiredOAuth())
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -450,7 +506,7 @@ func TestRateLimitHonorsRetryAfterHeader(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	now := time.Now()
-	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: srv.URL, Now: func() time.Time { return now }}
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: missingCLIPath(t), TokenURL: srv.URL, Now: func() time.Time { return now }}
 
 	if _, err := m.Resolve(context.Background()); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("expected rate limited, got %v", err)
@@ -470,7 +526,6 @@ func TestRateLimitHonorsRetryAfterHeader(t *testing.T) {
 
 func TestServerErrorDoesNotResetCooldownStrikes(t *testing.T) {
 	clearAuthEnv(t)
-	path := writeCLIFile(t, expiredOAuth())
 	var hits atomic.Int64
 	// Sequence: 429 (strike 1) → 500 (must NOT reset strikes) → 429 (strike
 	// 2 → 5m rung). If the 500 cleared the ladder, the final 429 would only
@@ -484,7 +539,7 @@ func TestServerErrorDoesNotResetCooldownStrikes(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	now := time.Now()
-	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: srv.URL, Now: func() time.Time { return now }}
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: missingCLIPath(t), TokenURL: srv.URL, Now: func() time.Time { return now }}
 
 	m.Resolve(context.Background()) // 429 → strike 1, 2m cooldown
 	now = now.Add(2*time.Minute + time.Second)
@@ -504,11 +559,10 @@ func TestServerErrorDoesNotResetCooldownStrikes(t *testing.T) {
 
 func TestRefreshRejectionSurfacesNestedErrorDetail(t *testing.T) {
 	clearAuthEnv(t)
-	path := writeCLIFile(t, expiredOAuth())
 	ts := newTokenServer(t, http.StatusBadRequest, map[string]any{
 		"error": map[string]any{"type": "invalid_request_error", "message": "refresh token revoked"},
 	}, nil)
-	m := Manager{StoreDir: t.TempDir(), CredentialsPath: path, TokenURL: ts.URL}
+	m := Manager{StoreDir: seedExpiredStore(t), CredentialsPath: missingCLIPath(t), TokenURL: ts.URL}
 
 	_, err := m.Resolve(context.Background())
 	var authErr *AuthError

@@ -254,7 +254,7 @@ func (a *App) setupTray() error {
 	_ = ni.SetToolTip(appName)
 	a.trayHide = a.addTrayAction(trayHideStatus, func() { a.setStatusVisible(false) })
 	a.trayShow = a.addTrayAction(trayShowStatus, func() { a.setStatusVisible(true) })
-	a.trayConnectClaude = a.addTrayAction(trayConnectClaude, func() { a.showConnectClaudeDialog() })
+	a.trayConnectClaude = a.addTrayAction(trayConnectClaude, func() { a.showClaudeSignInDialog() })
 	_ = a.trayConnectClaude.SetVisible(false)
 	a.addTrayAction(traySettings, func() { a.showSettingsDialog() })
 	a.addTrayAction(trayExit, func() {
@@ -837,7 +837,7 @@ func (a *App) handleMouseDown(x, y int, button walk.MouseButton) {
 		a.lastCardHit[hit.card.SnapshotKey] = now
 		if now.Sub(last) <= 420*time.Millisecond {
 			if cardWantsClaudeConnect(hit.card) {
-				a.showConnectClaudeDialog()
+				a.showClaudeSignInDialog()
 			} else {
 				a.showBandPicker(hit.card)
 			}
@@ -2075,6 +2075,18 @@ func openFile(path string) error {
 
 func openFolder(path string) error {
 	return exec.Command("explorer.exe", path).Start()
+}
+
+// openSetupTokenTerminal opens a new console window already running `claude
+// setup-token`, so the user only approves in the browser and copies the
+// printed token; cmd /K keeps the window open for the copy. Launched via
+// ShellExecuteW, NOT exec.Command — exec from a windowsgui process wires the
+// child's std handles to NUL, so the console would open but stay blank.
+func openSetupTokenTerminal() error {
+	if _, err := exec.LookPath("claude"); err != nil {
+		return fmt.Errorf("claude CLI not found on PATH: %w", err)
+	}
+	return native.RunInConsole("claude setup-token")
 }
 
 // openURL opens a fixed, compile-time URL in the default browser. Never pass

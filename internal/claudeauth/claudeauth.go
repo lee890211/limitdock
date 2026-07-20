@@ -1,9 +1,12 @@
 // Package claudeauth resolves a usable Claude OAuth access token from, in
 // priority order: the CLAUDE_CODE_OAUTH_TOKEN env var, LimitDock's own
-// DPAPI-encrypted token store, or the Claude Code CLI's credentials file.
-// Expired tokens are refreshed in place; because Anthropic rotates refresh
-// tokens on use, a refresh is only considered successful once the rotated
-// pair has been persisted back to its source.
+// DPAPI-encrypted token store (setup-token or Connect flow), or the Claude
+// Code CLI's credentials file. Only store tokens are refreshed (Anthropic
+// rotates refresh tokens on use, so a refresh counts as successful once the
+// rotated pair is persisted); the CLI file is strictly read-only — refreshing
+// it raced the CLI's own writer over one rotating lineage, and background
+// refresh attempts with a dead credential are what escalate the token
+// endpoint's per-client rate limiting (observed 2026-07-19/20).
 package claudeauth
 
 import (
@@ -53,6 +56,14 @@ const (
 // within a practical delay.
 var cooldownLadder = []time.Duration{2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute}
 
+// maxRefreshStrikes is the circuit breaker: after this many consecutive 429s
+// the background refresh stops entirely instead of retrying on the ladder
+// forever — sustained retries with a rejected credential are what taught the
+// endpoint to throttle this client in the first place. User-initiated
+// ExchangeCode bypasses the breaker, and any non-429/non-5xx response (e.g. a
+// successful exchange) resets it.
+const maxRefreshStrikes = 3
+
 // tokenEndpointGate holds per-endpoint 429 cooldown state. It is process-wide
 // because Manager values are constructed fresh for every call; keying by URL
 // keeps production and test endpoints independent.
@@ -99,6 +110,15 @@ func (g *tokenEndpointGate) clear(url string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.entries, url)
+}
+
+func (g *tokenEndpointGate) strikeCount(url string) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if e := g.entries[url]; e != nil {
+		return e.strikes
+	}
+	return 0
 }
 
 // ErrNoSource means no credential source exists at all; callers should stay
@@ -161,25 +181,34 @@ func (m Manager) Resolve(ctx context.Context) (Token, error) {
 		return tok, nil
 	}
 	if !errors.Is(storeErr, credstore.ErrNotFound) {
-		// The LimitDock store existed but is unusable; a healthy CLI file may
-		// still serve, so keep going and only report the store failure when
-		// nothing else exists.
+		// The LimitDock store existed but is unusable; a CLI file with a
+		// still-valid token may bridge the gap. When it cannot, the store
+		// failure is the one to report — the store is the primary source and
+		// its error carries the actionable guidance.
 		m.logf("Claude token store unusable: %v", storeErr)
-		tok, cliErr := m.resolveCLIFile(ctx)
-		if cliErr == nil {
+		if tok, cliErr := m.resolveCLIFile(ctx); cliErr == nil {
 			return tok, nil
 		}
-		if errors.Is(cliErr, ErrNoSource) {
-			return Token{}, storeErr
-		}
-		return Token{}, cliErr
+		return Token{}, storeErr
 	}
 	return m.resolveCLIFile(ctx)
 }
 
-// Disconnect removes the LimitDock-owned token.
-func (m Manager) Disconnect() error {
-	return m.store().Delete(storeTokenName)
+// SaveSetupToken stores a long-lived token minted by `claude setup-token` as
+// the LimitDock-owned credential. Such tokens carry no refresh token and no
+// known expiry (ExpiresAt 0 is treated as non-expiring by resolveStore), so
+// the reader never touches the rate-limited token endpoint for them; quota
+// comes via the header probe because the usage API rejects the token's
+// user:inference-only scope with 403.
+func (m Manager) SaveSetupToken(token string) error {
+	token = strings.TrimSpace(token)
+	// sk-ant-oat is the setup-token (OAuth access token) shape specifically;
+	// a plain sk-ant- prefix would also accept Console API keys
+	// (sk-ant-api...), which the OAuth usage endpoints reject.
+	if !strings.HasPrefix(token, "sk-ant-oat") {
+		return fmt.Errorf("that does not look like a Claude setup-token (expected it to start with sk-ant-oat)")
+	}
+	return m.store().Save(storeTokenName, storedToken{AccessToken: token})
 }
 
 // StoredAccountEmail reports the account email of the LimitDock-owned token,
@@ -231,6 +260,12 @@ func (m Manager) resolveStore(ctx context.Context) (Token, error) {
 	return Token{AccessToken: st.AccessToken, ExpiresAt: time.UnixMilli(st.ExpiresAt), Source: "store", AccountEmail: st.AccountEmail}, nil
 }
 
+// resolveCLIFile serves the Claude Code CLI's own token strictly read-only:
+// it is used only while still valid, never refreshed and never written back.
+// LimitDock refreshing this file rotated a refresh-token lineage the CLI also
+// rotates (a reuse-detection lockout risk), and retrying the refresh with an
+// expired credential is what escalates the token endpoint's rate limiting.
+// The CLI rewrites the file whenever the user actually runs claude.
 func (m Manager) resolveCLIFile(ctx context.Context) (Token, error) {
 	path := m.credentialsPath()
 	if path == "" || !fileExists(path) {
@@ -244,23 +279,10 @@ func (m Manager) resolveCLIFile(ctx context.Context) (Token, error) {
 	if creds.accessToken != "" && (creds.expiresAt <= 0 || m.now().Add(expirySkew).Before(expiresAt)) {
 		return Token{AccessToken: creds.accessToken, ExpiresAt: expiresAt, Source: "cli"}, nil
 	}
-	if strings.TrimSpace(creds.refreshToken) == "" {
-		return Token{}, authErrorf("Claude Code access token expired at %s and no refresh token is available; run claude login or connect Claude", expiresAt.Format(time.RFC3339))
+	if creds.accessToken == "" {
+		return Token{}, authErrorf("Claude Code CLI credentials at %s carry no access token; register a setup-token in Settings, or use Connect Claude", path)
 	}
-	res, err := m.refresh(ctx, creds.refreshToken)
-	if err != nil {
-		return Token{}, err
-	}
-	// Anthropic rotates refresh tokens: if the rotated pair cannot be written
-	// back for the CLI to keep using, the refresh must count as a failure.
-	if err := writeBackCLICredentials(path, creds.raw, res, m.now()); err != nil {
-		return Token{}, authErrorf("refreshed Claude token but failed to update %s: %v; run claude login if the CLI stops authenticating", path, err)
-	}
-	return Token{
-		AccessToken: res.AccessToken,
-		ExpiresAt:   m.now().Add(time.Duration(res.ExpiresIn) * time.Second),
-		Source:      "cli",
-	}, nil
+	return Token{}, authErrorf("Claude Code CLI token expired at %s; run claude in a terminal (it refreshes on use), register a setup-token in Settings, or use Connect Claude", expiresAt.Local().Format("2006-01-02 15:04"))
 }
 
 func (m Manager) credentialsPath() string {
@@ -327,6 +349,13 @@ func (r *tokenResponse) errorDetail() string {
 }
 
 func (m Manager) refresh(ctx context.Context, refreshToken string) (*tokenResponse, error) {
+	// Circuit breaker: after maxRefreshStrikes consecutive 429s this is no
+	// longer a transient blip — stop retrying (retry loops with a rejected
+	// credential are what get this client throttled) and surface a needs-auth
+	// state that points at the refresh-free setup-token route instead.
+	if strikes := gate.strikeCount(m.tokenURL()); strikes >= maxRefreshStrikes {
+		return nil, authErrorf("Anthropic keeps rate limiting sign-in refresh (HTTP 429 x%d); paused further attempts to avoid a lockout — register a setup-token in Settings, or use Connect Claude", strikes)
+	}
 	// Background refreshes must not touch a rate-limited endpoint: repeated
 	// POSTs keep the per-IP limit saturated, which also blocks the
 	// user-initiated Connect code exchange on the same endpoint.

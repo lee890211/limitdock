@@ -3,24 +3,18 @@ package claudeauth
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
-	"time"
-
-	"limitdock/internal/fsutil"
 )
 
 type cliCredentials struct {
 	accessToken  string
 	refreshToken string
 	expiresAt    int64 // unix milliseconds
-	raw          map[string]any
 }
 
-// readCLICredentials parses the Claude Code CLI credentials file, keeping the
-// full document (with json.Number literals) so a write-back preserves every
-// field LimitDock does not understand.
+// readCLICredentials parses the Claude Code CLI credentials file. The file is
+// read-only for LimitDock — the CLI owns its token lineage.
 func readCLICredentials(path string) (cliCredentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -36,7 +30,7 @@ func readCLICredentials(path string) (cliCredentials, error) {
 	if oauth == nil {
 		return cliCredentials{}, authErrorf("%s has no claudeAiOauth section", path)
 	}
-	creds := cliCredentials{raw: raw}
+	creds := cliCredentials{}
 	if s, ok := oauth["accessToken"].(string); ok {
 		creds.accessToken = strings.TrimSpace(s)
 	}
@@ -52,29 +46,4 @@ func readCLICredentials(path string) (cliCredentials, error) {
 		return cliCredentials{}, authErrorf("%s has no usable tokens", path)
 	}
 	return creds, nil
-}
-
-// writeBackCLICredentials atomically persists a rotated token pair into the
-// CLI credentials file, mutating only the claudeAiOauth token fields.
-func writeBackCLICredentials(path string, raw map[string]any, res *tokenResponse, now time.Time) error {
-	if raw == nil {
-		return fmt.Errorf("missing original credentials document")
-	}
-	oauth, _ := raw["claudeAiOauth"].(map[string]any)
-	if oauth == nil {
-		oauth = map[string]any{}
-	}
-	oauth["accessToken"] = res.AccessToken
-	if res.RefreshToken != "" {
-		oauth["refreshToken"] = res.RefreshToken
-	}
-	if res.ExpiresIn > 0 {
-		oauth["expiresAt"] = json.Number(fmt.Sprintf("%d", now.Add(time.Duration(res.ExpiresIn)*time.Second).UnixMilli()))
-	}
-	raw["claudeAiOauth"] = oauth
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return err
-	}
-	return fsutil.AtomicWriteFile(path, data, 0o600)
 }

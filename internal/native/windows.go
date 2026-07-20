@@ -77,6 +77,32 @@ func OpenURL(url string) error {
 	return nil
 }
 
+// RunInConsole opens a fresh visible console window running `cmd /K
+// <command>`, keeping the window open afterwards. ShellExecuteW is deliberate:
+// exec.Command from a windowsgui process binds the child's standard handles to
+// the NUL device (Go's default for nil Stdin/Stdout/Stderr), which leaves the
+// new console permanently blank even though the command runs.
+func RunInConsole(command string) error {
+	verb, err := windows.UTF16PtrFromString("open")
+	if err != nil {
+		return err
+	}
+	file, err := windows.UTF16PtrFromString("cmd.exe")
+	if err != nil {
+		return err
+	}
+	params, err := windows.UTF16PtrFromString("/K " + command)
+	if err != nil {
+		return err
+	}
+	const swShowNormal = 1
+	r1, _, callErr := procShellExecute.Call(0, uintptr(unsafe.Pointer(verb)), uintptr(unsafe.Pointer(file)), uintptr(unsafe.Pointer(params)), 0, swShowNormal)
+	if r1 <= 32 {
+		return fmt.Errorf("ShellExecuteW failed (code %d): %v", r1, callErr)
+	}
+	return nil
+}
+
 func PrimaryBounds() Rect {
 	w := callInt(procGetSystemMetrics, smCxScreen)
 	h := callInt(procGetSystemMetrics, smCyScreen)

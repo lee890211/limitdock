@@ -69,9 +69,9 @@ Inspect the local machine for installed or running agents and verify expected so
 - A `needs_auth` card renders red with main text `Sign in` and no quota bands.
 - A `stale` card renders amber, keeps its last-known bands, and shows `stale` in the detail text.
 - The tray `Connect Claude...` item is visible only while the Claude card is `needs_auth`.
-- `Settings → Providers` lists all five providers with status text, plus Claude `Connect...`/`Disconnect` buttons.
+- `Settings → Providers` lists all five providers with status text, plus a single Claude `Connect...` button (no Disconnect — re-connecting overwrites the stored token).
 - Clicking the `Updated` panel forces a real refresh even while a provider is in its 429 backoff window.
-- In the Connect dialog: the browser opens to the Claude sign-in page, the paste field accepts the pasted code, and `Cancel` closes the dialog without connecting.
+- The Connect dialog leads with the setup-token route: `Run claude setup-token` opens a terminal with visible output running the command, the printed `sk-ant-oat...` token auto-fills from the clipboard, and `Save` stores it. `Browser sign-in...` switches to the PKCE dialog: the browser opens to the Claude sign-in page, the paste field accepts the pasted code, and `Cancel` closes the dialog without connecting.
 
 ## Reporting
 

@@ -111,7 +111,7 @@ With `Auto slide in overlay mode`, hover detection is bounded to the dock's own 
 
 The settings window includes log and diagnostic controls. Use them to browse LimitDock logs, open `limitdock.log`, or copy diagnostic paths for troubleshooting. Antigravity path settings are intentionally absent because LimitDock auto-detects local Antigravity quota sources.
 
-The settings window also includes a `Providers` section listing each provider's current credential state, with `Connect...`/`Disconnect` for Claude. See [Connect a Provider (Claude)](#connect-a-provider-claude).
+The settings window also includes a `Providers` section listing each provider's current credential state, with a single `Connect...` entry for Claude. See [Connect a Provider (Claude)](#connect-a-provider-claude).
 
 `Start LimitDock when Windows starts` writes a per-user `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value that points directly to `LimitDock.exe`. Clear the checkbox to remove the value. Older `LimitDock.lnk` startup shortcuts are cleaned up when this setting changes.
 
@@ -121,7 +121,7 @@ LimitDock renders only quota-like rows by default. A provider with **no local cr
 
 | Provider or agent | Notes |
 | --- | --- |
-| Claude Code | OAuth usage from `~/.claude/.credentials.json`, `CLAUDE_CODE_OAUTH_TOKEN`, or a LimitDock Connect sign-in (see below). Expired CLI tokens are refreshed and written back automatically. If credentials exist but cannot be used (expired refresh, rejected token), the card shows `Sign in`. If Claude was never configured locally, no card is shown. Real utilization percent, not a time-elapsed estimate. |
+| Claude Code | OAuth usage from a LimitDock-stored token (setup-token or browser sign-in, see below), `CLAUDE_CODE_OAUTH_TOKEN`, or the `claude` CLI's `~/.claude/.credentials.json`. The CLI file is read-only for LimitDock: its token is used while still valid, never refreshed or rewritten — once it expires the card shows `Sign in` until you run `claude` again or connect from LimitDock. Inference-only tokens (403) and usage-API rate limits (429) fall back to quota from rate-limit headers. Real utilization percent, not a time-elapsed estimate. |
 | Codex CLI | Merges ChatGPT wham usage with recent `.codex` session/log `rate_limits` rows. Expired tokens are refreshed and written back to `auth.json` automatically. |
 | Gemini CLI | `~/.gemini/oauth_creds.json` and Code Assist `retrieveUserQuota`. Expired tokens are refreshed and written back automatically. Model-specific rows are preferred; aggregate duplicates are suppressed when model rows exist. |
 | Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` and Connect `GetCurrentPeriodUsage`. Refreshed tokens are cached in memory across polls. Plan-cycle quota from `plan_percent_used`; reset text from `billing_cycle_end`. |
@@ -154,13 +154,27 @@ Antigravity:
 
 ## Connect a Provider (Claude)
 
-Connect Claude from LimitDock when you want a LimitDock-owned token, or when an existing Claude credential has become unusable:
+Connect Claude from LimitDock when you want a LimitDock-owned token, or when an existing Claude credential has become unusable. Open the flow from the tray menu's `Connect Claude...` item (visible only while the Claude card is `Sign in`), from `Settings → Providers → Connect...` (always available, including first-time setup with no Claude card), or by double-clicking the Claude card while it shows `Sign in`. The dialog offers two routes:
 
-1. Open the flow from the tray menu's `Connect Claude...` item (visible only while the Claude card is `Sign in`), from `Settings → Providers → Connect...` (always available, including first-time setup with no Claude card), or by double-clicking the Claude card while it shows `Sign in`.
-2. Click `1. Open Claude sign-in` to open the Claude sign-in page in your browser and approve LimitDock.
-3. Copy the code the page shows. LimitDock auto-fills the field when the clipboard looks like a sign-in code (`CODE#STATE`). If it does not, click `Paste` (or press Ctrl+V) and then click `Connect`.
+**Setup-token (recommended)**
 
-LimitDock stores the resulting token itself, DPAPI-encrypted under `state\credentials\`; it never modifies `~/.claude/.credentials.json` and works even if the `claude` CLI is not installed. To disconnect, open `Settings → Providers` and click `Disconnect` next to Claude — this removes only the LimitDock-stored token and does not affect a `claude` CLI login.
+1. Click `Run claude setup-token`. A terminal opens already running the command; approve LimitDock in the browser it launches. Requires the `claude` CLI on PATH — if the terminal cannot start, the command is copied to the clipboard to run manually.
+2. Copy the `sk-ant-oat...` token the terminal prints. The dialog auto-fills it from the clipboard (or click `Paste` / press Ctrl+V).
+3. Click `Save`.
+
+Setup-tokens are long-lived, so LimitDock never needs Anthropic's rate-limited OAuth refresh endpoint. Quota is read from rate-limit headers and shows the `5h`/`7d` bars (no per-model 7d split — the usage API rejects this token type).
+
+**Browser sign-in**
+
+1. Click `Browser sign-in...` (works without the `claude` CLI), then `1. Open Claude sign-in`, and approve LimitDock in the browser.
+2. Copy the code the page shows. LimitDock auto-fills the field when the clipboard looks like a sign-in code (`CODE#STATE`); otherwise click `Paste` (or press Ctrl+V).
+3. Click `Connect`.
+
+This token reads the full usage API (including per-model 7d buckets) while its refresh keeps working.
+
+Either way LimitDock stores the token itself, DPAPI-encrypted under `state\credentials\`; it never modifies `~/.claude/.credentials.json`. Connecting again overwrites the stored token — that is also how you switch accounts; there is no separate disconnect step.
+
+Rate limiting: Anthropic's OAuth token endpoint intermittently returns HTTP 429 to background refreshes. LimitDock backs off after a 429 and stops refresh attempts entirely after three consecutive ones, switching the card to `Sign in` with guidance instead of retrying forever. The setup-token route is immune because it never uses that endpoint.
 
 A card showing `Sign in` means local Claude credentials exist but are unusable and need a fresh sign-in. If Claude was never configured locally, no Claude card appears — use `Settings → Providers → Connect...` instead. A card showing `stale` means the latest fetch failed but LimitDock is still showing the last known values.
 
