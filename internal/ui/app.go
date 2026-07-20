@@ -84,6 +84,10 @@ const (
 	// disconnected or reconfigured dock display would leave hoverLoop
 	// working against stale rects and the dock unreachable.
 	topologyCheckTicks = 8
+	// Re-check the overlay's topmost band about every 1.2s: fullscreen apps,
+	// explorer restarts, and other topmost churn can strip WS_EX_TOPMOST,
+	// leaving the dock buried behind normal windows until the next applyDock.
+	topmostCheckTicks = 10
 )
 
 type Options struct {
@@ -1012,6 +1016,32 @@ func (a *App) hideDock(rect native.Rect) {
 	a.setRevealed(false)
 }
 
+// enforceOverlayTopmost re-asserts the overlay's topmost band when Windows
+// has demoted it (fullscreen apps, explorer restarts, and other topmost churn
+// strip WS_EX_TOPMOST), which otherwise buries the dock behind normal windows
+// until the next applyDock. Reserved mode needs no enforcement — its work-area
+// strip keeps other windows from overlapping — and a hidden auto-hide overlay
+// is left alone so the check cannot flash it visible.
+func (a *App) enforceOverlayTopmost(dockMode string, autoHide bool) {
+	if dockMode != "overlay" || !a.isVisible() || a.mw == nil || a.mw.IsDisposed() {
+		return
+	}
+	if autoHide && !a.isRevealed() {
+		return
+	}
+	a.mw.Synchronize(func() {
+		if a.mw.IsDisposed() {
+			return
+		}
+		hwnd := uintptr(a.mw.Handle())
+		if native.IsTopmost(hwnd) {
+			return
+		}
+		a.log.Printf("Overlay lost its topmost band; re-asserting")
+		native.SetTopmost(hwnd)
+	})
+}
+
 func (a *App) isVisible() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1057,6 +1087,7 @@ func (a *App) hoverLoop() {
 	nearTicks := 0
 	outTicks := 0
 	topoTicks := 0
+	topmostTicks := 0
 	for {
 		select {
 		case <-a.ctx.Done():
@@ -1070,6 +1101,12 @@ func (a *App) hoverLoop() {
 			dockMode, dockEdge, autoHide, monitorDev := a.cfg.DockMode, a.cfg.DockEdge, a.cfg.AutoHide, a.cfg.Monitor
 			full, work, interior := a.dockFull, a.dockWork, a.dockEdgeInterior
 			a.mu.Unlock()
+			// Before the auto-hide gate: the topmost watchdog must also cover
+			// always-visible overlays (autoHide off), which the gate skips.
+			if topmostTicks++; topmostTicks >= topmostCheckTicks {
+				topmostTicks = 0
+				a.enforceOverlayTopmost(dockMode, autoHide)
+			}
 			if !a.isVisible() || dockMode != "overlay" || !autoHide || a.mw == nil || a.mw.IsDisposed() {
 				nearTicks, outTicks, topoTicks = 0, 0, 0
 				continue

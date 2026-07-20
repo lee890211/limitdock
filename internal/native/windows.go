@@ -173,6 +173,14 @@ func SetTopmost(hwnd uintptr) {
 	_, _, _ = procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
 }
 
+// IsTopmost reports whether the window still carries WS_EX_TOPMOST. Windows
+// strips the bit when something demotes the window out of the topmost band,
+// so this is the cheap probe for "did the overlay get buried".
+func IsTopmost(hwnd uintptr) bool {
+	style, _, _ := procGetWindowLong.Call(hwnd, uintptr(gwlExStyle))
+	return style&wsExTopmost != 0
+}
+
 func SetWindowOpacity(hwnd uintptr, opacityPercent int) {
 	if opacityPercent <= 0 || opacityPercent >= 100 {
 		style, _, _ := procGetWindowLong.Call(hwnd, uintptr(gwlExStyle))
