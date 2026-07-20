@@ -169,16 +169,20 @@ func TestClaudeCodeReaderResetsStored(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeReaderExpiredCredentialsTriggersRefresh(t *testing.T) {
+func TestClaudeCodeReaderExpiredCLICredentialsSurfaceNeedsAuth(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-	var usageAuth string
+	// The CLI file is read-only for LimitDock: an expired token must become a
+	// needs-auth card (pointing at the setup-token route) without any call to
+	// the token or usage endpoints.
+	var usageHits, tokenHits int
 	usageSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		usageAuth = r.Header.Get("Authorization")
+		usageHits++
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"five_hour":{"utilization":12.0,"resets_at":"2026-08-01T00:00:00Z"}}`))
 	}))
 	defer usageSrv.Close()
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenHits++
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"access_token":"refreshed-token","refresh_token":"rotated-refresh","expires_in":28800}`))
 	}))
@@ -203,23 +207,19 @@ func TestClaudeCodeReaderExpiredCredentialsTriggersRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if model.Snapshots["claude-code"] == nil {
-		t.Fatalf("missing snapshot after refresh: %#v", model.Snapshots)
+	snap := model.Snapshots["claude-code"]
+	if snap == nil || snap.Status != readmodel.StatusNeedsAuth {
+		t.Fatalf("expected needs_auth snapshot, got %#v", snap)
 	}
-	if usageAuth != "Bearer refreshed-token" {
-		t.Fatalf("usage call used %q, want refreshed token", usageAuth)
+	if tokenHits != 0 || usageHits != 0 {
+		t.Fatalf("expired CLI creds must not hit any endpoint, got token=%d usage=%d", tokenHits, usageHits)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read back creds: %v", err)
 	}
-	var doc map[string]any
-	if err := json.Unmarshal(after, &doc); err != nil {
-		t.Fatalf("parse back creds: %v", err)
-	}
-	oauth, _ := doc["claudeAiOauth"].(map[string]any)
-	if oauth["accessToken"] != "refreshed-token" || oauth["refreshToken"] != "rotated-refresh" {
-		t.Fatalf("rotated pair not written back: %#v", oauth)
+	if string(after) != string(data) {
+		t.Fatal("the CLI credentials file must stay untouched")
 	}
 }
 
